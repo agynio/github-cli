@@ -16,6 +16,7 @@ import (
 	remotes "github.com/cli/cli/v2/context"
 	"github.com/cli/cli/v2/git"
 	fd "github.com/cli/cli/v2/internal/featuredetection"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/set"
@@ -95,6 +96,8 @@ type FindOptions struct {
 	BaseBranch string
 	// States lists the possible PR states to scope the PR-for-branch lookup to.
 	States []string
+	// Detector determines which features are available.
+	Detector fd.Detector
 }
 
 // TODO: Does this also need the BaseBranchName?
@@ -214,6 +217,11 @@ func (f *finder) Find(opts FindOptions) (*api.PullRequest, ghrepo.Interface, err
 		return nil, nil, err
 	}
 
+	if opts.Detector == nil {
+		cachedClient := api.NewCachedHTTPClient(httpClient, time.Hour*24)
+		opts.Detector = fd.NewDetector(cachedClient, f.baseRefRepo.RepoHost())
+	}
+
 	// TODO(josebalius): Should we be guarding here?
 	if f.progress != nil {
 		f.progress.StartProgressIndicator()
@@ -226,9 +234,7 @@ func (f *finder) Find(opts FindOptions) (*api.PullRequest, ghrepo.Interface, err
 	fields.AddValues([]string{"id", "number"}) // for additional preload queries below
 
 	if fields.Contains("isInMergeQueue") || fields.Contains("isMergeQueueEnabled") {
-		cachedClient := api.NewCachedHTTPClient(httpClient, time.Hour*24)
-		detector := fd.NewDetector(cachedClient, f.baseRefRepo.RepoHost())
-		prFeatures, err := detector.PullRequestFeatures()
+		prFeatures, err := opts.Detector.PullRequestFeatures()
 		if err != nil {
 			return nil, nil, err
 		}
@@ -242,6 +248,15 @@ func (f *finder) Find(opts FindOptions) (*api.PullRequest, ghrepo.Interface, err
 	if fields.Contains("projectItems") {
 		getProjectItems = true
 		fields.Remove("projectItems")
+	}
+	if fields.Contains("projectCards") {
+		projectsV1Support, err := opts.Detector.ProjectsV1()
+		if err != nil {
+			return nil, nil, err
+		}
+		if projectsV1Support == gh.ProjectsV1Unsupported {
+			fields.Remove("projectCards")
+		}
 	}
 
 	var pr *api.PullRequest

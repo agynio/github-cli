@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/cli/cli/v2/api"
+	fd "github.com/cli/cli/v2/internal/featuredetection"
 	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/internal/text"
@@ -36,6 +37,7 @@ type Commentable interface {
 type CommentableOptions struct {
 	IO                        *iostreams.IOStreams
 	HttpClient                func() (*http.Client, error)
+	Detector                  fd.Detector
 	RetrieveCommentable       func() (Commentable, ghrepo.Interface, error)
 	EditSurvey                func(string) (string, error)
 	InteractiveEditSurvey     func(string) (string, error)
