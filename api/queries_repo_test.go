@@ -151,7 +151,7 @@ func Test_RepoMetadata(t *testing.T) {
 		  { "data": { "viewer": { "login": "monalisa" } } }
 		`))
 
-	result, err := RepoMetadata(client, repo, input)
+	result, err := RepoMetadata(client, repo, input, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -292,7 +292,7 @@ func Test_ProjectNamesToPaths(t *testing.T) {
 		} } } }
 		`))
 
-	projectPaths, err := ProjectNamesToPaths(client, repo, []string{"Triage", "Roadmap", "TriageV2", "RoadmapV2", "MonalisaV2"})
+	projectPaths, err := ProjectNamesToPaths(client, repo, []string{"Triage", "Roadmap", "TriageV2", "RoadmapV2", "MonalisaV2"}, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -352,7 +352,7 @@ t001: team(slug:"robots"){id,slug}
 			}
 		}))
 
-	result, err := RepoResolveMetadataIDs(client, repo, input)
+	result, err := RepoResolveMetadataIDs(client, repo, input, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
