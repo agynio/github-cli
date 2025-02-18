@@ -2,6 +2,13 @@ linters:
   enable:
   - gofmt
   - nolintlint
+  - cobrahelpcasing
+
+linters-settings:
+  custom:
+    cobrahelpcasing:
+      type: "module"
+      description: "Check that Cobra commands have the correct casing for help strings"
 
 issues:
   max-issues-per-linter: 0

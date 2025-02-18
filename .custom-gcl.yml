@@ -1,0 +1,5 @@
+version: v1.64.5
+plugins:
+  # a plugin from local source
+  - module: 'github.com/cli/cli/lint/cobrahelpcasing'
+    path: ./lint/cobrahelpcasing
