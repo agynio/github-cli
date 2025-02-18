@@ -156,18 +156,18 @@ func createTestDir(t *testing.T) (cleanupFn func()) {
 	}
 
 	// Make subdirectories
-	err = os.Mkdir(filepath.Join(rootDir, "subDir1"), 0o755)
+	err = os.Mkdir(filepath.Join(rootDir, "subDir1"), 0755)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = os.Mkdir(filepath.Join(rootDir, "subDir2"), 0o755)
+	err = os.Mkdir(filepath.Join(rootDir, "subDir2"), 0755)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Make Files
-	err = os.WriteFile(filepath.Join(rootDir, "rootFile.txt"), []byte(""), 0o644)
+	err = os.WriteFile(filepath.Join(rootDir, "rootFile.txt"), []byte(""), 0644)
 	if err != nil {
 		t.Fatal(err)
 	}
