@@ -16,13 +16,15 @@ import (
 )
 
 type listOptions struct {
-	BaseRepo       func() (ghrepo.Interface, error)
 	Browser        browser.Browser
 	AutolinkClient AutolinkListClient
 	IO             *iostreams.IOStreams
 
-	Exporter cmdutil.Exporter
-	WebMode  bool
+	BaseRepo ghrepo.Interface
+
+	WebMode bool
+
+	Renderer autolinkListRenderer
 }
 
 type AutolinkListClient interface {
@@ -35,6 +37,8 @@ func NewCmdList(f *cmdutil.Factory, runF func(*listOptions) error) *cobra.Comman
 		IO:      f.IOStreams,
 	}
 
+	var exporter cmdutil.Exporter
+
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List autolink references for a GitHub repository",
@@ -46,13 +50,26 @@ func NewCmdList(f *cmdutil.Factory, runF func(*listOptions) error) *cobra.Comman
 		Aliases: []string{"ls"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.BaseRepo = f.BaseRepo
+			baseRepo, err := f.BaseRepo()
+			if err != nil {
+				return err
+			}
+			opts.BaseRepo = baseRepo
 
 			httpClient, err := f.HttpClient()
 			if err != nil {
 				return err
 			}
 			opts.AutolinkClient = &AutolinkLister{HTTPClient: httpClient}
+
+			if exporter != nil {
+				opts.Renderer = &exporterRenderer{ios: opts.IO, exporter: exporter}
+			} else {
+				opts.Renderer = &tableRenderer{
+					repo: opts.BaseRepo,
+					ios:  opts.IO,
+				}
+			}
 
 			if runF != nil {
 				return runF(opts)
@@ -63,19 +80,62 @@ func NewCmdList(f *cmdutil.Factory, runF func(*listOptions) error) *cobra.Comman
 	}
 
 	cmd.Flags().BoolVarP(&opts.WebMode, "web", "w", false, "List autolink references in the web browser")
-	cmdutil.AddJSONFlags(cmd, &opts.Exporter, shared.AutolinkFields)
+	cmdutil.AddJSONFlags(cmd, &exporter, shared.AutolinkFields)
 
 	return cmd
 }
 
-func listRun(opts *listOptions) error {
-	repo, err := opts.BaseRepo()
-	if err != nil {
-		return err
+type autolinkListRenderer interface {
+	render(autolinks []shared.Autolink) error
+}
+
+type exporterRenderer struct {
+	ios      *iostreams.IOStreams
+	exporter cmdutil.Exporter
+}
+
+func (r *exporterRenderer) render(autolinks []shared.Autolink) error {
+	return r.exporter.Write(r.ios, autolinks)
+}
+
+type tableRenderer struct {
+	repo ghrepo.Interface
+	ios  *iostreams.IOStreams
+}
+
+func (r *tableRenderer) render(autolinks []shared.Autolink) error {
+	if len(autolinks) == 0 {
+		return cmdutil.NewNoResultsError(
+			fmt.Sprintf(
+				"no autolinks found in %s",
+				r.ios.ColorScheme().Bold(ghrepo.FullName(r.repo))),
+		)
 	}
 
+	if r.ios.IsStdoutTTY() {
+		title := fmt.Sprintf(
+			"Showing %s in %s",
+			text.Pluralize(len(autolinks), "autolink reference"),
+			r.ios.ColorScheme().Bold(ghrepo.FullName(r.repo)),
+		)
+		fmt.Fprintf(r.ios.Out, "\n%s\n\n", title)
+	}
+
+	tp := tableprinter.New(r.ios, tableprinter.WithHeader("ID", "KEY PREFIX", "URL TEMPLATE", "ALPHANUMERIC"))
+	for _, autolink := range autolinks {
+		tp.AddField(r.ios.ColorScheme().Cyanf("%d", autolink.ID))
+		tp.AddField(autolink.KeyPrefix)
+		tp.AddField(autolink.URLTemplate)
+		tp.AddField(strconv.FormatBool(autolink.IsAlphanumeric))
+		tp.EndRow()
+	}
+
+	return tp.Render()
+}
+
+func listRun(opts *listOptions) error {
 	if opts.WebMode {
-		autolinksListURL := ghrepo.GenerateRepoURL(repo, "settings/key_links")
+		autolinksListURL := ghrepo.GenerateRepoURL(opts.BaseRepo, "settings/key_links")
 
 		if opts.IO.IsStdoutTTY() {
 			fmt.Fprintf(opts.IO.ErrOut, "Opening %s in your browser.\n", text.DisplayURL(autolinksListURL))
@@ -84,43 +144,10 @@ func listRun(opts *listOptions) error {
 		return opts.Browser.Browse(autolinksListURL)
 	}
 
-	autolinks, err := opts.AutolinkClient.List(repo)
+	autolinks, err := opts.AutolinkClient.List(opts.BaseRepo)
 	if err != nil {
 		return err
 	}
 
-	cs := opts.IO.ColorScheme()
-
-	if len(autolinks) == 0 {
-		return cmdutil.NewNoResultsError(
-			fmt.Sprintf(
-				"no autolinks found in %s",
-				cs.Bold(ghrepo.FullName(repo))),
-		)
-	}
-
-	if opts.Exporter != nil {
-		return opts.Exporter.Write(opts.IO, autolinks)
-	}
-
-	if opts.IO.IsStdoutTTY() {
-		title := fmt.Sprintf(
-			"Showing %s in %s",
-			text.Pluralize(len(autolinks), "autolink reference"),
-			cs.Bold(ghrepo.FullName(repo)),
-		)
-		fmt.Fprintf(opts.IO.Out, "\n%s\n\n", title)
-	}
-
-	tp := tableprinter.New(opts.IO, tableprinter.WithHeader("ID", "KEY PREFIX", "URL TEMPLATE", "ALPHANUMERIC"))
-
-	for _, autolink := range autolinks {
-		tp.AddField(cs.Cyanf("%d", autolink.ID))
-		tp.AddField(autolink.KeyPrefix)
-		tp.AddField(autolink.URLTemplate)
-		tp.AddField(strconv.FormatBool(autolink.IsAlphanumeric))
-		tp.EndRow()
-	}
-
-	return tp.Render()
+	return opts.Renderer.render(autolinks)
 }
