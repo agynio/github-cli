@@ -75,17 +75,17 @@ type CreateOptions struct {
 type CreateContext struct {
 	// This struct stores contextual data about the creation process and is for building up enough
 	// data to create a pull request
-	RepoContext        *ghContext.ResolvedRemotes
-	BaseRepo           *api.Repository
-	HeadRepo           ghrepo.Interface
-	BaseTrackingBranch string
-	BaseBranch         string
-	HeadBranch         string
-	HeadBranchLabel    string
-	HeadRemote         *ghContext.Remote
-	IsPushEnabled      bool
-	Client             *api.Client
-	GitClient          *git.Client
+	RepoContext              *ghContext.ResolvedRemotes
+	BaseRepo                 *api.Repository
+	HeadRepo                 ghrepo.Interface
+	BaseTrackingBranch       string
+	BaseBranch               string
+	HeadBranch               string
+	HeadBranchLabel          string
+	HeadRemote               *ghContext.Remote
+	PromptForPushDestination bool
+	Client                   *api.Client
+	GitClient                *git.Client
 }
 
 func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Command {
@@ -620,13 +620,13 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 
 	headBranch := opts.HeadBranch
 	headBranchLabel := opts.HeadBranch
-	isPushEnabled := true // Whether we will ask user where to push
+	promptForPushDestination := true // Whether we will prompt the user for where to push the branch.
 	var headRepo ghrepo.Interface
 	var headRemote *ghContext.Remote
 	var headBranchConfig git.BranchConfig
 	// If --head was provided, then we don't ever ask where to push.
 	if headBranch != "" {
-		isPushEnabled = false
+		promptForPushDestination = false
 		// If the --head provided contains a colon, that means
 		// this is <remote>:<branch> syntax.
 		if idx := strings.IndexRune(headBranch, ':'); idx >= 0 {
@@ -671,7 +671,7 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 		remoteHeadCurrent := isRemoteHeadCurrent(gitClient, prRefs, remotes)
 		// If the remote head is up-to-date, and we have the headRef, we do not need to push anything.
 		if remoteHeadCurrent && prRefs.HeadRepo != nil && prRefs.BranchName != "" {
-			isPushEnabled = false
+			promptForPushDestination = false
 			headRepo = prRefs.HeadRepo
 			headRemote, err = remotes.FindByRepo(headRepo.RepoOwner(), headRepo.RepoName())
 			// TODO: KW what does an err here mean?
@@ -687,7 +687,7 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 	}
 
 	// otherwise, ask the user for the head repository using info obtained from the API
-	if headRepo == nil && isPushEnabled && opts.IO.CanPrompt() {
+	if headRepo == nil && promptForPushDestination && opts.IO.CanPrompt() {
 		pushableRepos, err := repoContext.HeadRepos()
 		if err != nil {
 			return nil, err
@@ -731,7 +731,7 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 				headBranchLabel = fmt.Sprintf("%s:%s", headRepo.RepoOwner(), headBranch)
 			}
 		} else if pushOptions[selectedOption] == "Skip pushing the branch" {
-			isPushEnabled = false
+			promptForPushDestination = false
 		} else if pushOptions[selectedOption] == "Cancel" {
 			return nil, cmdutil.CancelError
 		} else {
@@ -740,7 +740,7 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 		}
 	}
 
-	if headRepo == nil && isPushEnabled && !opts.IO.CanPrompt() {
+	if headRepo == nil && promptForPushDestination && !opts.IO.CanPrompt() {
 		fmt.Fprintf(opts.IO.ErrOut, "aborted: you must first push the current branch to a remote, or use the --head flag")
 		return nil, cmdutil.SilentError
 	}
@@ -762,17 +762,17 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 	}
 
 	return &CreateContext{
-		BaseRepo:           baseRepo,
-		HeadRepo:           headRepo,
-		BaseBranch:         baseBranch,
-		BaseTrackingBranch: baseTrackingBranch,
-		HeadBranch:         headBranch,
-		HeadBranchLabel:    headBranchLabel,
-		HeadRemote:         headRemote,
-		IsPushEnabled:      isPushEnabled,
-		RepoContext:        repoContext,
-		Client:             client,
-		GitClient:          gitClient,
+		BaseRepo:                 baseRepo,
+		HeadRepo:                 headRepo,
+		BaseBranch:               baseBranch,
+		BaseTrackingBranch:       baseTrackingBranch,
+		HeadBranch:               headBranch,
+		HeadBranchLabel:          headBranchLabel,
+		HeadRemote:               headRemote,
+		PromptForPushDestination: promptForPushDestination,
+		RepoContext:              repoContext,
+		Client:                   client,
+		GitClient:                gitClient,
 	}, nil
 }
 
@@ -924,7 +924,7 @@ func handlePush(opts CreateOptions, ctx CreateContext) error {
 	var err error
 	// if a head repository could not be determined so far, automatically create
 	// one by forking the base repository
-	if headRepo == nil && ctx.IsPushEnabled {
+	if headRepo == nil && ctx.PromptForPushDestination {
 		opts.IO.StartProgressIndicator()
 		headRepo, err = api.ForkRepo(client, ctx.BaseRepo, "", "", false)
 		opts.IO.StopProgressIndicator()
@@ -946,7 +946,7 @@ func handlePush(opts CreateOptions, ctx CreateContext) error {
 	// can push to it. We will try to add the head repo as the "origin" remote
 	// and fallback to the "fork" remote if it is unavailable. Also, if the
 	// base repo is the "origin" remote we will rename it "upstream".
-	if headRemote == nil && ctx.IsPushEnabled {
+	if headRemote == nil && ctx.PromptForPushDestination {
 		cfg, err := opts.Config()
 		if err != nil {
 			return err
@@ -1008,7 +1008,7 @@ func handlePush(opts CreateOptions, ctx CreateContext) error {
 	}
 
 	// automatically push the branch if it hasn't been pushed anywhere yet
-	if ctx.IsPushEnabled {
+	if ctx.PromptForPushDestination {
 		pushBranch := func() error {
 			w := NewRegexpWriter(opts.IO.ErrOut, gitPushRegexp, "")
 			defer w.Flush()
