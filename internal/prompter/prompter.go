@@ -94,8 +94,20 @@ func (p *huhPrompter) Input(prompt, defaultValue string) (string, error) {
 	return result, err
 }
 
-func (h *huhPrompter) Password(prompt string) (string, error) {
-	panic("not implemented")
+func (p *huhPrompter) Password(prompt string) (string, error) {
+	var result string
+	form := p.newForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(prompt).
+				Value(&result),
+			// This doesn't have any effect in accessible mode.
+			// EchoMode(huh.EchoModePassword),
+		),
+	)
+
+	err := form.Run()
+	return result, err
 }
 
 func (h *huhPrompter) Confirm(prompt string, defaultValue bool) (bool, error) {
