@@ -2,6 +2,7 @@ package prompter
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -52,7 +53,7 @@ type huhPrompter struct {
 func (p *huhPrompter) newForm(groups ...*huh.Group) *huh.Form {
 	return huh.NewForm(groups...).
 		WithTheme(huh.ThemeBase16()).
-		WithAccessible(true).
+		WithAccessible(os.Getenv("GH_SCREENREADER_FRIENDLY") != "").
 		WithProgramOptions(tea.WithOutput(p.stdout), tea.WithInput(p.stdin))
 }
 
@@ -110,23 +111,34 @@ func (p *huhPrompter) Password(prompt string) (string, error) {
 	return result, err
 }
 
-func (h *huhPrompter) Confirm(prompt string, defaultValue bool) (bool, error) {
+func (p *huhPrompter) Confirm(prompt string, _ bool) (bool, error) {
+	var result bool
+	form := p.newForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(prompt).
+				Value(&result),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return result, nil
+}
+
+func (p *huhPrompter) AuthToken() (string, error) {
 	panic("not implemented")
 }
 
-func (h *huhPrompter) AuthToken() (string, error) {
+func (p *huhPrompter) ConfirmDeletion(requiredValue string) error {
 	panic("not implemented")
 }
 
-func (h *huhPrompter) ConfirmDeletion(requiredValue string) error {
+func (p *huhPrompter) InputHostname() (string, error) {
 	panic("not implemented")
 }
 
-func (h *huhPrompter) InputHostname() (string, error) {
-	panic("not implemented")
-}
-
-func (h *huhPrompter) MarkdownEditor(prompt, defaultValue string, blankAllowed bool) (string, error) {
+func (p *huhPrompter) MarkdownEditor(prompt, defaultValue string, blankAllowed bool) (string, error) {
 	panic("not implemented")
 }
 
