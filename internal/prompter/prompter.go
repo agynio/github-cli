@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/cli/cli/v2/internal/ghinstance"
 	"github.com/cli/cli/v2/pkg/surveyext"
 	ghPrompter "github.com/cli/go-gh/v2/pkg/prompter"
@@ -27,13 +29,83 @@ type Prompter interface {
 }
 
 func New(editorCmd string, stdin ghPrompter.FileReader, stdout ghPrompter.FileWriter, stderr ghPrompter.FileWriter) Prompter {
-	return &surveyPrompter{
-		prompter:  ghPrompter.New(stdin, stdout, stderr),
-		stdin:     stdin,
-		stdout:    stdout,
-		stderr:    stderr,
-		editorCmd: editorCmd,
+	return &huhPrompter{
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
 	}
+	// return &surveyPrompter{
+	// 	prompter:  ghPrompter.New(stdin, stdout, stderr),
+	// 	stdin:     stdin,
+	// 	stdout:    stdout,
+	// 	stderr:    stderr,
+	// 	editorCmd: editorCmd,
+	// }
+}
+
+type huhPrompter struct {
+	stdin  ghPrompter.FileReader
+	stdout ghPrompter.FileWriter
+	stderr ghPrompter.FileWriter
+}
+
+func (p *huhPrompter) newForm(groups ...*huh.Group) *huh.Form {
+	return huh.NewForm(groups...).
+		WithTheme(huh.ThemeBase16()).
+		WithAccessible(true).
+		WithProgramOptions(tea.WithOutput(p.stdout), tea.WithInput(p.stdin))
+}
+
+func (p *huhPrompter) Select(prompt, defaultValue string, options []string) (int, error) {
+	var result int
+	formOptions := []huh.Option[int]{}
+	for i, o := range options {
+		formOptions = append(formOptions, huh.NewOption(o, i))
+	}
+
+	form := p.newForm(
+		huh.NewGroup(
+			huh.NewSelect[int]().
+				Title(prompt).
+				Value(&result).
+				Options(formOptions...),
+		),
+	)
+
+	err := form.Run()
+	return result, err
+}
+
+func (h *huhPrompter) MultiSelect(prompt string, defaults []string, options []string) ([]int, error) {
+	panic("not implemented")
+}
+
+func (h *huhPrompter) Input(prompt, defaultValue string) (string, error) {
+	panic("not implemented")
+}
+
+func (h *huhPrompter) Password(prompt string) (string, error) {
+	panic("not implemented")
+}
+
+func (h *huhPrompter) Confirm(prompt string, defaultValue bool) (bool, error) {
+	panic("not implemented")
+}
+
+func (h *huhPrompter) AuthToken() (string, error) {
+	panic("not implemented")
+}
+
+func (h *huhPrompter) ConfirmDeletion(requiredValue string) error {
+	panic("not implemented")
+}
+
+func (h *huhPrompter) InputHostname() (string, error) {
+	panic("not implemented")
+}
+
+func (h *huhPrompter) MarkdownEditor(prompt, defaultValue string, blankAllowed bool) (string, error) {
+	panic("not implemented")
 }
 
 type surveyPrompter struct {
