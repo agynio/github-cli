@@ -1722,13 +1722,13 @@ func Test_generateCompareURL(t *testing.T) {
 			name: "'/'s in branch names/labels are percent-encoded",
 			ctx: CreateContext{
 				PrRefs: shared.PullRequestRefs{
-					BaseRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "OWNER-UPSTREAM"}}, "github.com"),
-					HeadRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "OWNER"}}, "github.com"),
+					BaseRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "UPSTREAMOWNER"}}, "github.com"),
+					HeadRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "ORIGINOWNER"}}, "github.com"),
 					BranchName: "feature",
 				},
 				BaseBranch: "main/trunk",
 			},
-			want:    "https://github.com/OWNER-UPSTREAM/REPO/compare/main%2Ftrunk...OWNER:feature?body=&expand=1",
+			want:    "https://github.com/UPSTREAMOWNER/REPO/compare/main%2Ftrunk...ORIGINOWNER:feature?body=&expand=1",
 			wantErr: false,
 		},
 		{
@@ -1741,13 +1741,13 @@ func Test_generateCompareURL(t *testing.T) {
 			*/
 			ctx: CreateContext{
 				PrRefs: shared.PullRequestRefs{
-					BaseRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "OWNER-UPSTREAM"}}, "github.com"),
-					HeadRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "OWNER"}}, "github.com"),
+					BaseRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "UPSTREAMOWNER"}}, "github.com"),
+					HeadRepo:   api.InitRepoHostname(&api.Repository{Name: "REPO", Owner: api.RepositoryOwner{Login: "ORIGINOWNER"}}, "github.com"),
 					BranchName: "!$&'()+,;=@",
 				},
 				BaseBranch: "main/trunk",
 			},
-			want:    "https://github.com/OWNER-UPSTREAM/REPO/compare/main%2Ftrunk...OWNER:%21$&%27%28%29+%2C%3B=@?body=&expand=1",
+			want:    "https://github.com/UPSTREAMOWNER/REPO/compare/main%2Ftrunk...ORIGINOWNER:%21$&%27%28%29+%2C%3B=@?body=&expand=1",
 			wantErr: false,
 		},
 		{
