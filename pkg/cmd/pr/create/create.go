@@ -599,7 +599,7 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 		promptForHeadRepo = false
 		targetHeadBranch = opts.HeadBranch
 		// If the --head provided contains a colon, that means
-		// this is <owner>:<branch> syntax.
+		// this is <user>:<branch> syntax.
 		if idx := strings.IndexRune(opts.HeadBranch, ':'); idx >= 0 {
 			targetHeadRepoOwner = opts.HeadBranch[:idx]
 			targetHeadBranch = opts.HeadBranch[idx+1:]
@@ -636,7 +636,7 @@ func NewCreateContext(opts *CreateOptions) (*CreateContext, error) {
 		return nil, err
 	}
 
-	// If the --head provided contains <repo_name>:<branch>  syntax, we need to use
+	// If the --head provided contains <user>:<branch>  syntax, we need to use
 	// the provided owner instead of the owner of the base repository.
 	if targetHeadRepoOwner != "" {
 		prRefs.HeadRepo = ghrepo.New(targetHeadRepoOwner, prRefs.HeadRepo.RepoName())

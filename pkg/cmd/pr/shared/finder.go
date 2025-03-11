@@ -115,7 +115,7 @@ func (s *PullRequestRefs) HasHead() bool {
 
 // GetPRHeadLabel returns the string that the GitHub API uses to identify the PR. This is
 // either just the branch name or, if the PR is originating from a fork, the fork owner
-// and the branch name, like <owner>:<branch>.
+// and the branch name, like <user>:<branch>.
 func (s *PullRequestRefs) GetPRHeadLabel() string {
 	if ghrepo.IsSame(s.HeadRepo, s.BaseRepo) {
 		return s.BranchName
