@@ -37,8 +37,6 @@ exec git push upstream feature-branch
 exec git commit --allow-empty -m 'Fork Commit'
 exec git push origin feature-branch
 
-env GH_DEBUG=api
-
 # Create the PR
 exec gh pr create --title 'Feature Title' --body 'Feature Body'
 stdout https://${GH_HOST}/${ORG}/${REPO}/pull/1
