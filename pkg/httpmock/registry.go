@@ -65,8 +65,6 @@ func (r *Registry) Verify(t Testing) {
 				stacks.WriteString("\n")
 			}
 		}
-
-		// NOTE: stubs offer no useful reflection, so we can't print details
 		// about dead stubs and what they were trying to match
 		t.Errorf("%d HTTP stubs unmatched, stacks:\n%s", len(unmatchedStubStacks), stacks.String())
 	}
