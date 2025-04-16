@@ -499,12 +499,12 @@ func TestSearcherRepositories(t *testing.T) {
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
 					httpmock.QueryMatcher("GET", "search/repositories", values),
-					httpmock.JSONResponse(map[string]interface{}{
-						"incomplete_results": false,
-						"total_count":        1,
-						"items": []interface{}{
-							map[string]interface{}{
-								"name": "test",
+					httpmock.JSONResponse(RepositoriesResult{
+						IncompleteResults: false,
+						Total:             1,
+						Items: []Repository{
+							{
+								Name: "test",
 							},
 						},
 					}),
