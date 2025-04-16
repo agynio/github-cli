@@ -66,7 +66,7 @@ func TestNewCmdTransfer(t *testing.T) {
 			name: "issue name",
 			cli:  "3252 OWNER/REPO",
 			wants: TransferOptions{
-				IssueSelector:    "3252",
+				IssueNumber:      3252,
 				DestRepoSelector: "OWNER/REPO",
 			},
 		},
@@ -91,7 +91,7 @@ func TestNewCmdTransfer(t *testing.T) {
 
 			_, cErr := cmd.ExecuteC()
 			assert.NoError(t, cErr)
-			assert.Equal(t, tt.wants.IssueSelector, gotOpts.IssueSelector)
+			assert.Equal(t, tt.wants.IssueNumber, gotOpts.IssueNumber)
 			assert.Equal(t, tt.wants.DestRepoSelector, gotOpts.DestRepoSelector)
 		})
 	}
