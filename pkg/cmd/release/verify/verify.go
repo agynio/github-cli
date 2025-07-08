@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/cli/cli/v2/internal/ghinstance"
+
 	"github.com/MakeNowJust/heredoc"
 	v1 "github.com/in-toto/attestation/go/v1"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -13,16 +15,19 @@ import (
 	"github.com/cli/cli/v2/internal/tableprinter"
 	"github.com/cli/cli/v2/pkg/cmd/attestation/api"
 	"github.com/cli/cli/v2/pkg/cmd/attestation/artifact"
+	att_auth "github.com/cli/cli/v2/pkg/cmd/attestation/auth"
 	att_io "github.com/cli/cli/v2/pkg/cmd/attestation/io"
 	"github.com/cli/cli/v2/pkg/cmd/attestation/verification"
 	"github.com/cli/cli/v2/pkg/cmd/release/shared"
 	"github.com/cli/cli/v2/pkg/iostreams"
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/spf13/cobra"
 )
 
 type VerifyOptions struct {
+	Hostname string
 	TagName  string
 	BaseRepo ghrepo.Interface
 	Exporter cmdutil.Exporter
@@ -71,6 +76,15 @@ func NewCmdVerify(f *cmdutil.Factory, runF func(config *VerifyConfig) error) *co
 				opts.TagName = args[0]
 			}
 
+			if opts.Hostname == "" {
+				opts.Hostname, _ = ghauth.DefaultHost()
+			}
+
+			err := att_auth.IsHostSupported(opts.Hostname)
+			if err != nil {
+				return err
+			}
+
 			baseRepo, err := f.BaseRepo()
 			if err != nil {
 				return fmt.Errorf("failed to determine base repository: %w", err)
@@ -78,13 +92,14 @@ func NewCmdVerify(f *cmdutil.Factory, runF func(config *VerifyConfig) error) *co
 
 			opts.BaseRepo = baseRepo
 
+			// set hostname
 			httpClient, err := f.HttpClient()
 			if err != nil {
 				return err
 			}
 
 			io := f.IOStreams
-			attClient := api.NewLiveClient(httpClient, baseRepo.RepoHost(), att_io.NewHandler(io))
+			attClient := api.NewLiveClient(httpClient, opts.Hostname, att_io.NewHandler(io))
 
 			attVerifier := &shared.AttestationVerifier{
 				AttClient:  attClient,
@@ -100,6 +115,21 @@ func NewCmdVerify(f *cmdutil.Factory, runF func(config *VerifyConfig) error) *co
 				IO:          io,
 			}
 
+			// Prepare for tenancy if detected
+			if ghauth.IsTenancy(opts.Hostname) {
+				td, err := opts.APIClient.GetTrustDomain()
+				if err != nil {
+					return fmt.Errorf("error getting trust domain, make sure you are authenticated against the host: %w", err)
+				}
+
+				tenant, found := ghinstance.TenantName(opts.Hostname)
+				if !found {
+					return fmt.Errorf("invalid hostname provided: '%s'",
+						opts.Hostname)
+				}
+				config.TrustDomain = td
+				opts.Tenant = tenant
+			}
 			if runF != nil {
 				return runF(config)
 			}
