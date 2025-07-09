@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"path/filepath"
 
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
+
+	att_auth "github.com/cli/cli/v2/pkg/cmd/attestation/auth"
 	"github.com/cli/cli/v2/pkg/iostreams"
 
 	"github.com/cli/cli/v2/internal/ghrepo"
@@ -21,6 +24,7 @@ import (
 
 type VerifyAssetOptions struct {
 	TagName       string
+	Hostname      string
 	BaseRepo      ghrepo.Interface
 	Exporter      cmdutil.Exporter
 	AssetFilePath string
@@ -78,10 +82,20 @@ func NewCmdVerifyAsset(f *cmdutil.Factory, runF func(*VerifyAssetConfig) error) 
 
 			opts.AssetFilePath = filepath.Clean(opts.AssetFilePath)
 
+			if opts.Hostname == "" {
+				opts.Hostname, _ = ghauth.DefaultHost()
+			}
+
+			err := att_auth.IsHostSupported(opts.Hostname)
+			if err != nil {
+				return err
+			}
+
 			baseRepo, err := f.BaseRepo()
 			if err != nil {
 				return fmt.Errorf("failed to determine base repository: %w", err)
 			}
+			baseRepo = ghrepo.NewWithHost(baseRepo.RepoOwner(), baseRepo.RepoName(), opts.Hostname)
 			opts.BaseRepo = baseRepo
 
 			httpClient, err := f.HttpClient()
@@ -114,6 +128,7 @@ func NewCmdVerifyAsset(f *cmdutil.Factory, runF func(*VerifyAssetConfig) error) 
 		},
 	}
 	cmdutil.AddFormatFlags(cmd, &opts.Exporter)
+	cmd.Flags().StringVarP(&opts.Hostname, "hostname", "", "", "Configure host to use")
 
 	return cmd
 }

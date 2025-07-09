@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/cli/cli/v2/internal/ghinstance"
-
 	"github.com/MakeNowJust/heredoc"
 	v1 "github.com/in-toto/attestation/go/v1"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -89,6 +87,7 @@ func NewCmdVerify(f *cmdutil.Factory, runF func(config *VerifyConfig) error) *co
 			if err != nil {
 				return fmt.Errorf("failed to determine base repository: %w", err)
 			}
+			baseRepo = ghrepo.NewWithHost(baseRepo.RepoOwner(), baseRepo.RepoName(), opts.Hostname)
 
 			opts.BaseRepo = baseRepo
 
@@ -114,22 +113,6 @@ func NewCmdVerify(f *cmdutil.Factory, runF func(config *VerifyConfig) error) *co
 				AttVerifier: attVerifier,
 				IO:          io,
 			}
-
-			// Prepare for tenancy if detected
-			if ghauth.IsTenancy(opts.Hostname) {
-				td, err := opts.APIClient.GetTrustDomain()
-				if err != nil {
-					return fmt.Errorf("error getting trust domain, make sure you are authenticated against the host: %w", err)
-				}
-
-				tenant, found := ghinstance.TenantName(opts.Hostname)
-				if !found {
-					return fmt.Errorf("invalid hostname provided: '%s'",
-						opts.Hostname)
-				}
-				config.TrustDomain = td
-				opts.Tenant = tenant
-			}
 			if runF != nil {
 				return runF(config)
 			}
@@ -137,6 +120,7 @@ func NewCmdVerify(f *cmdutil.Factory, runF func(config *VerifyConfig) error) *co
 		},
 	}
 	cmdutil.AddFormatFlags(cmd, &opts.Exporter)
+	cmd.Flags().StringVarP(&opts.Hostname, "hostname", "", "", "Configure host to use")
 
 	return cmd
 }

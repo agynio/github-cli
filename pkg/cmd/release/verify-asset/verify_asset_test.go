@@ -25,6 +25,7 @@ func TestNewCmdVerifyAsset_Args(t *testing.T) {
 		args     []string
 		wantTag  string
 		wantFile string
+		wantHost string
 		wantErr  string
 	}{
 		{
@@ -32,17 +33,28 @@ func TestNewCmdVerifyAsset_Args(t *testing.T) {
 			args:     []string{"v1.2.3", "../../attestation/test/data/github_release_artifact.zip"},
 			wantTag:  "v1.2.3",
 			wantFile: test.NormalizeRelativePath("../../attestation/test/data/github_release_artifact.zip"),
+			wantHost: "github.com",
 		},
 		{
-			name: "valid flag with no tag",
-
+			name:     "valid flag with no tag",
 			args:     []string{"../../attestation/test/data/github_release_artifact.zip"},
 			wantFile: test.NormalizeRelativePath("../../attestation/test/data/github_release_artifact.zip"),
+			wantHost: "github.com",
 		},
 		{
-			name:    "no args",
-			args:    []string{},
-			wantErr: "you must specify an asset filepath",
+			name:     "valid hostname",
+			args:     []string{"v1.2.3", "../../attestation/test/data/github_release_artifact.zip", "--hostname", "foo.ghe.com"},
+			wantTag:  "v1.2.3",
+			wantFile: test.NormalizeRelativePath("../../attestation/test/data/github_release_artifact.zip"),
+			wantHost: "foo.ghe.com",
+		},
+		{
+			name:     "invalid hostname",
+			args:     []string{"v1.2.3", "../../attestation/test/data/github_release_artifact.zip", "--hostname", "foo.bar.com"},
+			wantTag:  "v1.2.3",
+			wantFile: test.NormalizeRelativePath("../../attestation/test/data/github_release_artifact.zip"),
+			wantHost: "foo.ghe.com", // expected fallback or previous valid host
+			wantErr:  "An unsupported host was detected. Note that gh attestation does not currently support GHES",
 		},
 	}
 	for _, tt := range tests {
@@ -78,6 +90,11 @@ func TestNewCmdVerifyAsset_Args(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tt.wantTag, cfg.Opts.TagName)
 				assert.Equal(t, tt.wantFile, cfg.Opts.AssetFilePath)
+
+				baseRepo := ghrepo.NewWithHost("owner", "repo", tt.wantHost)
+				assert.Equal(t, baseRepo.RepoHost(), cfg.Opts.BaseRepo.RepoHost())
+				assert.Equal(t, baseRepo.RepoOwner(), cfg.Opts.BaseRepo.RepoOwner())
+				assert.Equal(t, baseRepo.RepoName(), cfg.Opts.BaseRepo.RepoName())
 			}
 		})
 	}

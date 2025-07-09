@@ -19,20 +19,36 @@ import (
 
 func TestNewCmdVerify_Args(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    []string
-		wantTag string
-		wantErr string
+		name         string
+		args         []string
+		wantTag      string
+		wantErr      string
+		wantHostname string
 	}{
 		{
-			name:    "valid tag arg",
-			args:    []string{"v1.2.3"},
-			wantTag: "v1.2.3",
+			name:         "valid tag arg",
+			args:         []string{"v1.2.3"},
+			wantTag:      "v1.2.3",
+			wantHostname: "github.com",
 		},
 		{
-			name:    "no tag arg",
-			args:    []string{},
-			wantTag: "",
+			name:         "no tag arg",
+			args:         []string{},
+			wantTag:      "",
+			wantHostname: "github.com",
+		},
+		{
+			name:         "valid hostname",
+			args:         []string{"v1.2.3", "--hostname", "foo.ghe.com"},
+			wantTag:      "v1.2.3",
+			wantHostname: "foo.ghe.com",
+		},
+		{
+			name:         "invalid hostname",
+			args:         []string{"v1.2.3", "--hostname", "invalid.host"},
+			wantTag:      "v1.2.3",
+			wantHostname: "foo.ghe.com",
+			wantErr:      "An unsupported host was detected. Note that gh attestation does not currently support GHES",
 		},
 	}
 	for _, tt := range tests {
@@ -60,8 +76,18 @@ func TestNewCmdVerify_Args(t *testing.T) {
 
 			_, err := cmd.ExecuteC()
 
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantTag, cfg.Opts.TagName)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantTag, cfg.Opts.TagName)
+
+				baseRepo := ghrepo.NewWithHost("owner", "repo", tt.wantHostname)
+				assert.Equal(t, baseRepo.RepoHost(), cfg.Opts.BaseRepo.RepoHost())
+				assert.Equal(t, baseRepo.RepoOwner(), cfg.Opts.BaseRepo.RepoOwner())
+				assert.Equal(t, baseRepo.RepoName(), cfg.Opts.BaseRepo.RepoName())
+			}
 		})
 	}
 }
