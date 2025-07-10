@@ -17,6 +17,7 @@ var releaseFields = []string{
 	"isDraft",
 	"isLatest",
 	"isPrerelease",
+	"isImmutable",
 	"createdAt",
 	"publishedAt",
 }
@@ -27,6 +28,7 @@ type Release struct {
 	IsDraft      bool
 	IsLatest     bool
 	IsPrerelease bool
+	IsImmutable  bool `graphql:"immutable"`
 	CreatedAt    time.Time
 	PublishedAt  time.Time
 }

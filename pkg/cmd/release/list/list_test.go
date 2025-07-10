@@ -239,6 +239,7 @@ func TestExportReleases(t *testing.T) {
 		IsDraft:      true,
 		IsLatest:     false,
 		IsPrerelease: true,
+		IsImmutable:  true,
 		CreatedAt:    createdAt,
 		PublishedAt:  publishedAt,
 	}}
@@ -246,6 +247,6 @@ func TestExportReleases(t *testing.T) {
 	exporter.SetFields(releaseFields)
 	require.NoError(t, exporter.Write(ios, rs))
 	require.JSONEq(t,
-		`[{"createdAt":"2024-01-01T00:00:00Z","isDraft":true,"isLatest":false,"isPrerelease":true,"name":"v1","publishedAt":"2024-02-01T00:00:00Z","tagName":"tag"}]`,
+		`[{"createdAt":"2024-01-01T00:00:00Z","isDraft":true,"isLatest":false,"isPrerelease":true,"isImmutable":true,"name":"v1","publishedAt":"2024-02-01T00:00:00Z","tagName":"tag"}]`,
 		stdout.String())
 }
