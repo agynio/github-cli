@@ -1,51 +1,93 @@
-#!/usr/bin/bash
+#!/bin/bash
 
 #_issue_url="https://github.com/cli/cli/issues/11236"  # a template copy
 # _issue_url="https://github.com/cli/cli/issues/11223"  # a link
 #_issue_url="https://github.com/cli/cli/issues/11242" # two words
 
-#_issue_url=https://github.com/cli/cli/issues/11272 # legit, short
-_issue_url=https://github.com/cli/cli/issues/11239 # legit, oss community
+_issue_url=https://github.com/cli/cli/issues/11272 # legit, short
+#_issue_url=https://github.com/cli/cli/issues/11239 # legit, oss community
 
 _issue_body="$(gh issue view $_issue_url --json body -q '.body')"
 _issue_title="$(gh issue view $_issue_url --json title -q '.title')"
 
 # _issue_body="gh issue create"
 
-_prompt="title: $_issue_title
+_prompt="
+<ISSUE TITLE:>
+$_issue_title
+</ISSUE TITLE:>
 
-Body:
-
-$_issue_body"
+<ISSUE BODY:>
+$_issue_body
+</ISSUE BODY:>
+"
 
 _system_prompt='
 # Your role as a spam detection system
 
 You are a spam detection AI. You determine if the provided GitHub issue is spam or not.
 
-You''re going to answer the following questions based on the issue provided to you as a prompt, and project the answers to fields in the JSON response.
-
-- Populate the `template_match_score` field of the response with a number between -1 to 10 where 0 means the issue is not an EXACT match of an issue template and 10 is an exact match of an issue template with no additional content. Respond with -1 if you are unsure.
-- Populate the `github_unrelated_score` field of the response with a number between -1 to 10 where 0 means the issue is completely related to GitHub and 10 means the issue is completely unrelated to GitHub. Respond with -1 if you are unsure.
-    - Similarity to an issue template DOES NOT indicate relatedness to GitHub.
-- Populate the `cli_unrelated_score` field of the response with a number between -1 to 10 where 0 means the issue is completely related to GitHub CLI or other CLI tools and 10 means the issue is completely unrelated to GitHub CLI or other CLI tools. Respond with -1 if you are unsure.
-    - Similarity to an issue template DOES NOT indicate relatedness to GitHub CLI or other CLI tools.
-- Populate the `nonsense_score` field of the response with a number between -1 to 10 where 0 means the issue is completely sensible and 10 means the issue is complete nonsense. Respond with -1 if you are unsure.
-
-For each field, you MUST provide a number. If you provide 0, that means the issue is less likely to be spam. If you provide 10, that means the issue is more likely to be spam.
-
-You MUST provide -1 if you are unsure of the score to assign to a particular field.
-
 ## Response format
 
-Respond with a JSON object the below schema:
+Respond with a JSON object according to the below schema:
 
 ```
 {
-    "template_match_score": 0,
-    "github_unrelated_score": 0,
-    "cli_unrelated_score": 0,
-    "nonsense_score": 0
+    "template_similarity": {
+        "template_match_score": {
+            "description": "A number describing how similar the issue is to the provided project templates.",
+            "definition of 0": "The issue does not match any of the provided project templates.",
+            "definition of 5": "The issue has some similarities like headings or comments, but other content has been added significantly by the author.",
+            "definition of 10": "The issue matches the provided project template exactly and has no user edits.",
+            "value": 0
+        },
+        "user_edits_score": {
+            "description": "A number describing how much the user has edited the issue after creating it.",
+            "definition of 0": "The issue has been edited significantly. No headings or comments match a template.",
+            "definition of 5": "The issue has been edited by the user, but still contains some template-like headings or comments.",
+            "definition of 10": "The issue has not been edited by the user at all. It matches a template exactly.",
+            "value": 0
+        }
+    },
+    "github_relatedness": {
+        "github_unrelated_score": {
+            "description": "A number describing how related the issue content is to GitHub.",
+            "definition of 0": "The issue is completely related to GitHub.",
+            "definition of 5": "The issue has some relation to GitHub, but also includes unrelated content.",
+            "definition of 10": "The issue is completely unrelated to GitHub.",
+            "value": 0
+        },
+        "cli_unrelated_score": {
+            "description": "A number describing how related the issue content is to CLI tools.",
+            "definition of 0": "The issue is completely related to CLI tools.",
+            "definition of 5": "The issue has some relation to CLI tools, but also includes unrelated content.",
+            "definition of 10": "The issue is completely unrelated to CLI tools.",
+            "value": 0
+        }
+    },
+    "content_quality": {
+        "nonsense_score": {
+            "description": "A number describing how sensible and legible the issue content is.",
+            "definition of 0": "The issue is completely sensible and legible.",
+            "definition of 5": "The issue has some nonsensical elements, but is otherwise grounded.",
+            "definition of 10": "The issue is complete nonsense and illegible.",
+            "value": 0
+        },
+        "effort_score": {
+            "description": "A number describing the effort put into writing the issue.",
+            "definition of 0": "The issue shows significant effort and thought put into it, like a detailed description or multiple paragraphs.",
+            "definition of 5": "The issue shows some effort, like a couple sentences.",
+            "definition of 10": "The issue shows no effort at all, like a single word or a link.",
+            "value": 0
+        },
+        "title_logical_association_with_body_score": {
+            "description": "A number describing how logically the issue title is associated with the body content.",
+            "definition of 0": "The title is completely logically associated with the body content.",
+            "definition of 5": "The title has some association with the body content, but is not directly related.",
+            "definition of 10": "The title is completely unrelated to the body content.",
+            "value": 0
+        }
+    }
 }
 ```
 
@@ -99,7 +141,7 @@ Issues that match spam content are likely spam.
 
 ## Issue templates
 
-Issues that exactly match issues templates defined below are likely spam.
+Issues that exactly match the issue templates defined below are likely spam.
 
 Here are the issue templates already defined in the project:
 
@@ -116,14 +158,18 @@ for template_file in .github/ISSUE_TEMPLATE/*.md; do
 
     # Remove YAML front matter (everything between the first two --- lines)
     _template_content="$(echo "$_template_content" | sed '1,/^---$/d; /^---$/,$d')"
-
     _escaped_template="${_template_content//\`/\\\`}"
+    
     _system_prompt="${_system_prompt}
-### Template ${_template_index}
+
+<Template ${_template_index}>
+
 \`\`\`
 ${_escaped_template}
 \`\`\`
+</Template ${_template_index}>
 "
+
     ((_template_index++))
 done
 
