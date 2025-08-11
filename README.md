@@ -10,7 +10,7 @@ GitHub CLI is supported for users on GitHub.com, GitHub Enterprise Cloud, and Gi
 
 For [installation options see below](#installation), for usage instructions [see the manual][manual].
 
-## Contributing
+## Contributing 2
 
 If anything feels off or if you feel that some functionality is missing, please check out the [contributing page][contributing]. There you will find instructions for sharing your feedback, building the tool locally, and submitting pull requests to the project.
 
