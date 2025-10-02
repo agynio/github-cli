@@ -1740,6 +1740,59 @@ func TestClientPush(t *testing.T) {
 		{
 			name: "push",
 			commands: map[args]commandResult{
+				`path/to/git -c credential.helper= -c credential.helper=!"gh" auth git-credential push origin trunk`: {
+					ExitStatus: 0,
+				},
+			},
+		},
+		{
+			name: "accepts command modifiers",
+			mods: []CommandModifier{WithRepoDir("/path/to/repo")},
+			commands: map[args]commandResult{
+				`path/to/git -C /path/to/repo -c credential.helper= -c credential.helper=!"gh" auth git-credential push origin trunk`: {
+					ExitStatus: 0,
+				},
+			},
+		},
+		{
+			name: "git error on push",
+			commands: map[args]commandResult{
+				`path/to/git -c credential.helper= -c credential.helper=!"gh" auth git-credential push origin trunk`: {
+					ExitStatus: 1,
+					Stderr:     "push error message",
+				},
+			},
+			wantErrorMsg: "failed to run git: push error message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmdCtx := createMockedCommandContext(t, tt.commands)
+			client := Client{
+				GitPath:        "path/to/git",
+				commandContext: cmdCtx,
+			}
+			err := client.Push(context.Background(), "origin", "trunk", tt.mods...)
+			if tt.wantErrorMsg == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, tt.wantErrorMsg)
+			}
+		})
+	}
+}
+
+func TestClientPushWithTracking(t *testing.T) {
+	tests := []struct {
+		name         string
+		mods         []CommandModifier
+		commands     mockedCommands
+		wantErrorMsg string
+	}{
+		{
+			name: "push",
+			commands: map[args]commandResult{
 				`path/to/git -c credential.helper= -c credential.helper=!"gh" auth git-credential push --set-upstream origin trunk`: {
 					ExitStatus: 0,
 				},
