@@ -300,20 +300,19 @@ func editRun(opts *EditOptions) error {
 	}
 
 	if opts.Interactive {
-		// Remove PR author from reviewer options;
-		// REST API errors if author is included (GraphQL silently ignores).
-		if editable.Reviewers.Edited {
+		// Remove PR author from reviewer options list if we fetched them; in suggestion mode it will be excluded separately.
+		if editable.Reviewers.Edited && len(editable.Reviewers.Options) > 0 {
 			s := set.NewStringSet()
 			s.AddValues(editable.Reviewers.Options)
 			s.Remove(pr.Author.Login)
 			editable.Reviewers.Options = s.ToSlice()
 		}
-
 		editorCommand, err := opts.EditorRetriever.Retrieve()
 		if err != nil {
 			return err
 		}
-		err = opts.Surveyor.EditFields(&editable, editorCommand)
+		// Use new survey with suggestions integrated.
+		err = shared.EditFieldsSurveyWithSuggestions(opts.Prompter, &editable, editorCommand, apiClient, repo, pr.ID, pr.Author.Login)
 		if err != nil {
 			return err
 		}

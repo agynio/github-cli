@@ -295,7 +295,8 @@ func editRun(opts *EditOptions) error {
 			if err != nil {
 				return err
 			}
-			err = opts.EditFieldsSurvey(opts.Prompter, &editable, editorCommand)
+			// Use unified survey with suggestions. Reviewer exclusion not needed for issues.
+			err = prShared.EditFieldsSurveyWithSuggestions(opts.Prompter, &editable, editorCommand, apiClient, baseRepo, issue.ID, "")
 			if err != nil {
 				return err
 			}

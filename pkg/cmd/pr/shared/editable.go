@@ -351,6 +351,106 @@ func EditFieldsSurvey(p EditPrompter, editable *Editable, editorCommand string) 
 	return nil
 }
 
+// EditFieldsSurveyWithSuggestions is a variant of EditFieldsSurvey that, when assignable IDs are
+// provided and interactive suggestion mode is active (bulk assignables skipped), replaces the
+// standard multi-select for reviewers/assignees with the dynamic suggestedActors loop.
+// assignableID: GraphQL node ID of the PR or Issue being edited.
+// excludeReviewerLogin: login to exclude from reviewer suggestions (e.g. author).
+func EditFieldsSurveyWithSuggestions(p EditPrompter, editable *Editable, editorCommand string, apiClient *api.Client, repo ghrepo.Interface, assignableID string, excludeReviewerLogin string) error {
+	var err error
+	if editable.Title.Edited {
+		editable.Title.Value, err = p.Input("Title", editable.Title.Default)
+		if err != nil {
+			return err
+		}
+	}
+	if editable.Body.Edited {
+		editable.Body.Value, err = p.MarkdownEditor("Body", editable.Body.Default, false)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Detect interactive suggestion mode: options slice empty for edited field implies we skipped bulk fetch.
+	suggestionModeReviewers := editable.Reviewers.Edited && len(editable.Reviewers.Options) == 0 && assignableID != ""
+	suggestionModeAssignees := editable.Assignees.Edited && editable.Assignees.ActorAssignees && len(editable.Assignees.Options) == 0 && assignableID != ""
+
+	if editable.Reviewers.Edited {
+		if suggestionModeReviewers {
+			// Use existing reviewer defaults (logins) as initial selection.
+			chosen, actorMap, selErr := InteractiveSuggestedActorsSelection(p, apiClient, repo, assignableID, excludeReviewerLogin, editable.Reviewers.Default, "Reviewers")
+			if selErr != nil {
+				return selErr
+			}
+			editable.Reviewers.Value = chosen
+			EnsureMetadataActors(&editable.Metadata, actorMap)
+		} else {
+			editable.Reviewers.Value, err = multiSelectSurvey(p, "Reviewers", editable.Reviewers.Default, editable.Reviewers.Options)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if editable.Assignees.Edited {
+		if suggestionModeAssignees {
+			// For assignees use DefaultLogins to seed selection if actor assignees.
+			initial := editable.Assignees.DefaultLogins
+			if len(initial) == 0 {
+				initial = editable.Assignees.Default
+			}
+			chosen, actorMap, selErr := InteractiveSuggestedActorsSelection(p, apiClient, repo, assignableID, "", initial, "Assignees")
+			if selErr != nil {
+				return selErr
+			}
+			editable.Assignees.Value = chosen
+			EnsureMetadataActors(&editable.Metadata, actorMap)
+		} else {
+			editable.Assignees.Value, err = multiSelectSurvey(p, "Assignees", editable.Assignees.Default, editable.Assignees.Options)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if editable.Labels.Edited {
+		editable.Labels.Add, err = multiSelectSurvey(p, "Labels", editable.Labels.Default, editable.Labels.Options)
+		if err != nil {
+			return err
+		}
+		for _, prev := range editable.Labels.Default {
+			var found bool
+			for _, selected := range editable.Labels.Add {
+				if prev == selected {
+					found = true
+					break
+				}
+			}
+			if !found {
+				editable.Labels.Remove = append(editable.Labels.Remove, prev)
+			}
+		}
+	}
+	if editable.Projects.Edited {
+		editable.Projects.Value, err = multiSelectSurvey(p, "Projects", editable.Projects.Default, editable.Projects.Options)
+		if err != nil {
+			return err
+		}
+	}
+	if editable.Milestone.Edited {
+		editable.Milestone.Value, err = milestoneSurvey(p, editable.Milestone.Default, editable.Milestone.Options)
+		if err != nil {
+			return err
+		}
+	}
+	confirm, err := p.Confirm("Submit?", true)
+	if err != nil {
+		return err
+	}
+	if !confirm {
+		return fmt.Errorf("Discarding...")
+	}
+	return nil
+}
+
 func FieldsToEditSurvey(p EditPrompter, editable *Editable) error {
 	contains := func(s []string, str string) bool {
 		for _, v := range s {
@@ -400,19 +500,21 @@ func FetchOptions(client *api.Client, repo ghrepo.Interface, editable *Editable,
 	// Determine whether to fetch organization teams.
 	// Interactive reviewer editing (Edited true, but no Add/Remove slices) still needs
 	// team data for selection UI. For non-interactive flows, we never need to fetch teams.
-	teamReviewers := false
-	if editable.Reviewers.Edited {
-		// This is likely an interactive flow since edited is set but no mutations to
-		// Add/Remove slices, so we need to load the teams.
-		if len(editable.Reviewers.Add) == 0 && len(editable.Reviewers.Remove) == 0 {
-			teamReviewers = true
-		}
-	}
+	interactiveReviewers := editable.Reviewers.Edited && len(editable.Reviewers.Add) == 0 && len(editable.Reviewers.Remove) == 0
+	interactiveAssignees := editable.Assignees.Edited && len(editable.Assignees.Add) == 0 && len(editable.Assignees.Remove) == 0
+
+	// We currently defer team reviewer integration; keep false to skip team metadata when using
+	// suggested actors for reviewers.
+	teamReviewers := interactiveReviewers && false
+
+	// Skip bulk assignable fetches when interactive and using suggestedActors.
+	fetchAssignable := !(interactiveReviewers || interactiveAssignees)
+
 	input := api.RepoMetadataInput{
-		Reviewers:      editable.Reviewers.Edited,
+		Reviewers:      editable.Reviewers.Edited && fetchAssignable,
 		TeamReviewers:  teamReviewers,
-		Assignees:      editable.Assignees.Edited,
-		ActorAssignees: editable.Assignees.ActorAssignees,
+		Assignees:      editable.Assignees.Edited && fetchAssignable,
+		ActorAssignees: editable.Assignees.ActorAssignees && fetchAssignable,
 		Labels:         editable.Labels.Edited,
 		ProjectsV1:     editable.Projects.Edited && projectV1Support == gh.ProjectsV1Supported,
 		ProjectsV2:     editable.Projects.Edited,
@@ -452,11 +554,15 @@ func FetchOptions(client *api.Client, repo ghrepo.Interface, editable *Editable,
 	}
 
 	editable.Metadata = *metadata
-	editable.Reviewers.Options = append(users, teams...)
-	if editable.Assignees.ActorAssignees {
-		editable.Assignees.Options = actors
-	} else {
-		editable.Assignees.Options = users
+	// Populate options only if we fetched assignables. Interactive suggestion flows
+	// build their own dynamic lists and don't need these large option arrays.
+	if fetchAssignable {
+		editable.Reviewers.Options = append(users, teams...)
+		if editable.Assignees.ActorAssignees {
+			editable.Assignees.Options = actors
+		} else {
+			editable.Assignees.Options = users
+		}
 	}
 	editable.Labels.Options = labels
 	editable.Projects.Options = projects

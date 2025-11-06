@@ -3,7 +3,6 @@ package shared
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/cli/cli/v2/api"
@@ -179,11 +178,13 @@ func MetadataSurvey(p Prompt, io *iostreams.IOStreams, baseRepo ghrepo.Interface
 	}
 
 	// Retrieve and process data for survey prompts based on the extra fields selected
+	// We deliberately skip fetching full assignable users/actors when interactively selecting
+	// Assignees or Reviewers. We only need the current login for reviewers and other metadata.
 	metadataInput := api.RepoMetadataInput{
 		Reviewers:      isChosen("Reviewers"),
-		TeamReviewers:  isChosen("Reviewers"),
-		Assignees:      isChosen("Assignees"),
-		ActorAssignees: isChosen("Assignees") && state.ActorAssignees,
+		TeamReviewers:  false, // teams omitted in POC
+		Assignees:      false,
+		ActorAssignees: false,
 		Labels:         isChosen("Labels"),
 		ProjectsV1:     isChosen("Projects") && projectsV1Support == gh.ProjectsV1Supported,
 		ProjectsV2:     isChosen("Projects"),
@@ -194,38 +195,7 @@ func MetadataSurvey(p Prompt, io *iostreams.IOStreams, baseRepo ghrepo.Interface
 		return fmt.Errorf("error fetching metadata options: %w", err)
 	}
 
-	var reviewers []string
-	for _, u := range metadataResult.AssignableUsers {
-		if u.Login() != metadataResult.CurrentLogin {
-			reviewers = append(reviewers, u.DisplayName())
-		}
-	}
-	for _, t := range metadataResult.Teams {
-		reviewers = append(reviewers, fmt.Sprintf("%s/%s", baseRepo.RepoOwner(), t.Slug))
-	}
-
-	// Populate the list of selectable assignees and their default selections.
-	// This logic maps the default assignees from `state` to the corresponding actors or users
-	// so that the correct display names are preselected in the prompt.
-	var assignees []string
-	var assigneesDefault []string
-	if state.ActorAssignees {
-		for _, u := range metadataResult.AssignableActors {
-			assignees = append(assignees, u.DisplayName())
-
-			if slices.Contains(state.Assignees, u.Login()) {
-				assigneesDefault = append(assigneesDefault, u.DisplayName())
-			}
-		}
-	} else {
-		for _, u := range metadataResult.AssignableUsers {
-			assignees = append(assignees, u.DisplayName())
-
-			if slices.Contains(state.Assignees, u.Login()) {
-				assigneesDefault = append(assigneesDefault, u.DisplayName())
-			}
-		}
-	}
+	// Reviewer & Assignee interactive lists will be built via suggestedActors API later.
 	var labels []string
 	for _, l := range metadataResult.Labels {
 		labels = append(labels, l.Name)
@@ -252,38 +222,23 @@ func MetadataSurvey(p Prompt, io *iostreams.IOStreams, baseRepo ghrepo.Interface
 	}{}
 
 	if isChosen("Reviewers") {
-		if len(reviewers) > 0 {
-			selected, err := p.MultiSelect("Reviewers", state.Reviewers, reviewers)
-			if err != nil {
-				return err
-			}
-			for _, i := range selected {
-				values.Reviewers = append(values.Reviewers, reviewers[i])
-			}
-		} else {
-			fmt.Fprintln(io.ErrOut, "warning: no available reviewers")
+		mf, _ := fetcher.(*MetadataFetcher)
+		// assignableID unavailable in create flow; pass empty string
+		selectedLogins, actorMap, err := InteractiveSuggestedActorsSelection(p, mf.APIClient, baseRepo, "", metadataResult.CurrentLogin, state.Reviewers, "Reviewers")
+		if err != nil {
+			return err
 		}
+		values.Reviewers = selectedLogins
+		EnsureMetadataActors(metadataResult, actorMap)
 	}
 	if isChosen("Assignees") {
-		if len(assignees) > 0 {
-			selected, err := p.MultiSelect("Assignees", assigneesDefault, assignees)
-			if err != nil {
-				return err
-			}
-			for _, i := range selected {
-				// Previously, this logic relied upon `assignees` being in `<login>` or `<login> (<name>)` form,
-				// however the inclusion of actors breaks this convention.
-				// Instead, we map the selected indexes to the source that populated `assignees` rather than
-				// relying on parsing the information out.
-				if state.ActorAssignees {
-					values.Assignees = append(values.Assignees, metadataResult.AssignableActors[i].Login())
-				} else {
-					values.Assignees = append(values.Assignees, metadataResult.AssignableUsers[i].Login())
-				}
-			}
-		} else {
-			fmt.Fprintln(io.ErrOut, "warning: no assignable users")
+		mf, _ := fetcher.(*MetadataFetcher)
+		selectedLogins, actorMap, err := InteractiveSuggestedActorsSelection(p, mf.APIClient, baseRepo, "", "", state.Assignees, "Assignees")
+		if err != nil {
+			return err
 		}
+		values.Assignees = selectedLogins
+		EnsureMetadataActors(metadataResult, actorMap)
 	}
 	if isChosen("Labels") {
 		if len(labels) > 0 {
@@ -331,12 +286,7 @@ func MetadataSurvey(p Prompt, io *iostreams.IOStreams, baseRepo ghrepo.Interface
 
 	// Update issue / pull request metadata state
 	if isChosen("Reviewers") {
-		var logins []string
-		for _, r := range values.Reviewers {
-			// Extract user login from display name
-			logins = append(logins, (strings.Split(r, " "))[0])
-		}
-		state.Reviewers = logins
+		state.Reviewers = values.Reviewers
 	}
 	if isChosen("Assignees") {
 		state.Assignees = values.Assignees
@@ -356,6 +306,159 @@ func MetadataSurvey(p Prompt, io *iostreams.IOStreams, baseRepo ghrepo.Interface
 	}
 
 	return nil
+}
+
+// InteractiveSuggestedActorsSelection performs the multi-select loop using the suggestedActors API.
+// Returns selected logins and a map of login->AssignableActor for later ID resolution.
+// excludeLogin is skipped (e.g. current user when selecting reviewers).
+// If assignableID is non-empty, suggestions are fetched for that specific Issue/PR node; otherwise
+// an empty suggestion set is returned since the object does not yet exist (create flows).
+// Exported for reuse in edit flows.
+func InteractiveSuggestedActorsSelection(p Prompt, client *api.Client, repo ghrepo.Interface, assignableID string, excludeLogin string, initial []string, label string) ([]string, map[string]api.AssignableActor, error) {
+	chosen := make([]string, 0, len(initial))
+	chosenSet := make(map[string]struct{})
+	for _, l := range initial {
+		if excludeLogin != "" && strings.EqualFold(l, excludeLogin) {
+			continue
+		}
+		if _, ok := chosenSet[l]; !ok {
+			chosen = append(chosen, l)
+			chosenSet[l] = struct{}{}
+		}
+	}
+	actorMap := make(map[string]api.AssignableActor)
+
+	fetch := func(q string) ([]api.AssignableActor, error) {
+		var actors []api.AssignableActor
+		var err error
+		if assignableID == "" {
+			actors, err = api.SuggestActorsForRepository(client, repo, q)
+		} else {
+			actors, err = api.SuggestActorsForAssignable(client, repo, assignableID, q)
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range actors {
+			if _, exists := actorMap[a.Login()]; !exists {
+				actorMap[a.Login()] = a
+			}
+		}
+		return actors, nil
+	}
+
+	// initial fetch
+	suggestions, err := fetch("")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for {
+		// Build options: chosen first, then suggestions (excluding chosen), then "Search"
+		var opts []string
+		var defaults []string
+		for _, login := range chosen {
+			if a, ok := actorMap[login]; ok {
+				opts = append(opts, a.DisplayName())
+				defaults = append(defaults, a.DisplayName())
+			} else {
+				opts = append(opts, login)
+				defaults = append(defaults, login)
+			}
+		}
+		for _, a := range suggestions {
+			l := a.Login()
+			if _, exists := chosenSet[l]; exists {
+				continue
+			}
+			opts = append(opts, a.DisplayName())
+		}
+		opts = append(opts, "Search")
+
+		selectedIdxs, err := p.MultiSelect(label, defaults, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		pickedSearch := false
+		newChosenSet := make(map[string]struct{})
+		var newChosenOrdered []string
+		for _, idx := range selectedIdxs {
+			if idx < 0 || idx >= len(opts) {
+				continue
+			}
+			val := opts[idx]
+			if val == "Search" {
+				pickedSearch = true
+				continue
+			}
+			login := strings.Split(val, " ")[0]
+			if excludeLogin != "" && strings.EqualFold(login, excludeLogin) {
+				continue
+			}
+			if _, exists := newChosenSet[login]; !exists {
+				newChosenSet[login] = struct{}{}
+				newChosenOrdered = append(newChosenOrdered, login)
+			}
+			if _, ok := actorMap[login]; !ok {
+				// create synthetic user actor if not present (ID empty)
+				actorMap[login] = api.NewAssignableUser("", login, "")
+			}
+		}
+		chosenSet = newChosenSet
+		chosen = newChosenOrdered
+
+		if !pickedSearch {
+			break
+		}
+
+		// Prompt for search query; prevent blank input
+		var q string
+		for q == "" {
+			var inpErr error
+			q, inpErr = p.Input("Search", "")
+			if inpErr != nil {
+				return nil, nil, inpErr
+			}
+		}
+		suggestions, err = fetch(q)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return chosen, actorMap, nil
+}
+
+// ensureMetadataActors merges actors gathered interactively into metadataResult so that
+// downstream ID resolution (MembersToIDs) works.
+func EnsureMetadataActors(metadataResult *api.RepoMetadataResult, actors map[string]api.AssignableActor) {
+	for _, a := range actors {
+		// Add to AssignableActors if not present
+		foundActor := false
+		for _, existing := range metadataResult.AssignableActors {
+			if existing.Login() == a.Login() {
+				foundActor = true
+				break
+			}
+		}
+		if !foundActor {
+			metadataResult.AssignableActors = append(metadataResult.AssignableActors, a)
+		}
+		// If user, also add to AssignableUsers for MembersToIDs
+		if u, ok := a.(api.AssignableUser); ok {
+			foundUser := false
+			for _, existing := range metadataResult.AssignableUsers {
+				if existing.Login() == u.Login() {
+					foundUser = true
+					break
+				}
+			}
+			if !foundUser {
+				metadataResult.AssignableUsers = append(metadataResult.AssignableUsers, u)
+			}
+		}
+	}
 }
 
 type Editor interface {

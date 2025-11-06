@@ -1164,6 +1164,146 @@ func (b AssignableBot) Name() string {
 
 func (b AssignableBot) sealedAssignableActor() {}
 
+// SuggestActorsForRepository fetches up to 10 suggested actors (users or bots) for a repository
+// optionally filtered by a search query. Used for create flows before an Issue/PR node exists.
+// If query is empty, the query variable is passed as null to omit filtering.
+func SuggestActorsForRepository(client *Client, repo ghrepo.Interface, query string) ([]AssignableActor, error) {
+	type responseData struct {
+		Repository struct {
+			SuggestedActors struct {
+				Nodes []struct {
+					User struct {
+						ID       string
+						Login    string
+						Name     string
+						TypeName string `graphql:"__typename"`
+					} `graphql:"... on User"`
+					Bot struct {
+						ID       string
+						Login    string
+						TypeName string `graphql:"__typename"`
+					} `graphql:"... on Bot"`
+				}
+			} `graphql:"suggestedActors(first: 10, capabilities: CAN_BE_ASSIGNED, query: $query)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+
+	variables := map[string]interface{}{
+		"owner": githubv4.String(repo.RepoOwner()),
+		"name":  githubv4.String(repo.RepoName()),
+	}
+	if query != "" {
+		variables["query"] = githubv4.String(query)
+	} else {
+		variables["query"] = (*githubv4.String)(nil)
+	}
+
+	var result responseData
+	if err := client.Query(repo.RepoHost(), "RepositorySuggestedActors", &result, variables); err != nil {
+		return nil, err
+	}
+
+	actors := make([]AssignableActor, 0, len(result.Repository.SuggestedActors.Nodes))
+	for _, n := range result.Repository.SuggestedActors.Nodes {
+		if n.User.TypeName == "User" && n.User.Login != "" {
+			actors = append(actors, AssignableUser{id: n.User.ID, login: n.User.Login, name: n.User.Name})
+		} else if n.Bot.TypeName == "Bot" && n.Bot.Login != "" {
+			actors = append(actors, AssignableBot{id: n.Bot.ID, login: n.Bot.Login})
+		}
+	}
+	return actors, nil
+}
+
+// SuggestActorsForAssignable fetches up to 10 suggested actors for a specific assignable
+// (Issue or PullRequest) node ID. This enables more context-aware suggestions compared to
+// repository-level suggestions. `assignableID` is the GraphQL node ID for the Issue/PR.
+// If query is empty, the query variable is passed as null to omit filtering.
+func SuggestActorsForAssignable(client *Client, repo ghrepo.Interface, assignableID string, query string) ([]AssignableActor, error) {
+	type responseData struct {
+		Node struct {
+			Issue struct {
+				SuggestedActors struct {
+					Nodes []struct {
+						User struct {
+							ID       string
+							Login    string
+							Name     string
+							TypeName string `graphql:"__typename"`
+						} `graphql:"... on User"`
+						Bot struct {
+							ID       string
+							Login    string
+							TypeName string `graphql:"__typename"`
+						} `graphql:"... on Bot"`
+					}
+				} `graphql:"suggestedActors(first: 10, query: $query)"`
+			} `graphql:"... on Issue"`
+			PullRequest struct {
+				SuggestedActors struct {
+					Nodes []struct {
+						User struct {
+							ID       string
+							Login    string
+							Name     string
+							TypeName string `graphql:"__typename"`
+						} `graphql:"... on User"`
+						Bot struct {
+							ID       string
+							Login    string
+							TypeName string `graphql:"__typename"`
+						} `graphql:"... on Bot"`
+					}
+				} `graphql:"suggestedActors(first: 10, query: $query)"`
+			} `graphql:"... on PullRequest"`
+		} `graphql:"node(id: $id)"`
+	}
+
+	variables := map[string]interface{}{
+		"id": githubv4.ID(assignableID),
+	}
+	if query != "" {
+		variables["query"] = githubv4.String(query)
+	} else {
+		variables["query"] = (*githubv4.String)(nil)
+	}
+
+	var result responseData
+	if err := client.Query(repo.RepoHost(), "AssignableSuggestedActors", &result, variables); err != nil {
+		return nil, err
+	}
+
+	var rawNodes []struct {
+		User struct {
+			ID       string
+			Login    string
+			Name     string
+			TypeName string `graphql:"__typename"`
+		} `graphql:"... on User"`
+		Bot struct {
+			ID       string
+			Login    string
+			TypeName string `graphql:"__typename"`
+		} `graphql:"... on Bot"`
+	}
+
+	// Prefer PullRequest nodes over Issue nodes if both somehow present (shouldn't happen)
+	if result.Node.PullRequest.SuggestedActors.Nodes != nil {
+		rawNodes = result.Node.PullRequest.SuggestedActors.Nodes
+	} else if result.Node.Issue.SuggestedActors.Nodes != nil {
+		rawNodes = result.Node.Issue.SuggestedActors.Nodes
+	}
+
+	actors := make([]AssignableActor, 0, len(rawNodes))
+	for _, n := range rawNodes {
+		if n.User.TypeName == "User" && n.User.Login != "" {
+			actors = append(actors, AssignableUser{id: n.User.ID, login: n.User.Login, name: n.User.Name})
+		} else if n.Bot.TypeName == "Bot" && n.Bot.Login != "" {
+			actors = append(actors, AssignableBot{id: n.Bot.ID, login: n.Bot.Login})
+		}
+	}
+	return actors, nil
+}
+
 // RepoAssignableUsers fetches all the assignable users for a repository
 func RepoAssignableUsers(client *Client, repo ghrepo.Interface) ([]AssignableUser, error) {
 	type responseData struct {
@@ -1237,7 +1377,7 @@ func RepoAssignableActors(client *Client, repo ghrepo.Interface) ([]AssignableAc
 					HasNextPage bool
 					EndCursor   string
 				}
-			} `graphql:"suggestedActors(first: 100, after: $endCursor, capabilities: CAN_BE_ASSIGNED)"`
+			} `graphql:"suggestedActors(first: 100, after: $endCursor)"`
 		} `graphql:"repository(owner: $owner, name: $name)"`
 	}
 
