@@ -140,8 +140,9 @@ func NewCmdReviewAddComment(f *cmdutil.Factory, runF func(*addCommentOptions) er
 			Attach one or more inline comments to an existing pending review. Comments are
 			provided as JSON objects via repeated --add-comment flags or a JSON file.
 
-			Each comment must supply a file path and either a position or a combination of
-			line/side (optionally startLine/startSide for ranges).
+			Each comment JSON must provide "path" and "body", plus either a "position"
+			integer or a combination of "line" and "side" (optionally "start_line" and
+			"start_side" for ranges).
 		`),
 		Example: heredoc.Doc(`
 			# Add a single position-based comment
@@ -178,7 +179,7 @@ func NewCmdReviewAddComment(f *cmdutil.Factory, runF func(*addCommentOptions) er
 	}
 
 	cmd.Flags().Int64Var(&opts.ReviewID, "review-id", 0, "Pending review ID")
-	cmd.Flags().StringArrayVar(&opts.CommentInputs, "add-comment", nil, "Review comment as JSON object (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.CommentInputs, "add-comment", nil, "Review comment JSON (requires \"path\" and \"body\" plus \"position\" or \"line\"/\"side\")")
 	cmd.Flags().StringVar(&opts.CommentsFile, "comments-file", "", "Path to JSON file containing review comments")
 	cmdutil.AddJSONFlags(cmd, &opts.Exporter, prshared.ReviewCommentFields)
 
@@ -265,12 +266,12 @@ func collectPendingCommentInputs(opts *addCommentOptions) ([]api.PendingReviewCo
 
 func normalizePendingCommentInput(input api.PendingReviewCommentInput) (api.PendingReviewCommentInput, error) {
 	input.Path = strings.TrimSpace(input.Path)
-	input.Body = strings.TrimSpace(input.Body)
+	bodyTrimmed := strings.TrimSpace(input.Body)
 
 	if input.Path == "" {
 		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("comment path is required")
 	}
-	if input.Body == "" {
+	if bodyTrimmed == "" {
 		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("comment body cannot be blank")
 	}
 
@@ -293,11 +294,11 @@ func normalizePendingCommentInput(input api.PendingReviewCommentInput) (api.Pend
 
 		if input.StartLine != nil {
 			if input.StartSide == nil {
-				return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`startSide` is required when `startLine` is provided")
+				return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`start_side` is required when `start_line` is provided")
 			}
 			startSide := strings.ToUpper(strings.TrimSpace(*input.StartSide))
 			if startSide == "" {
-				return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`startSide` cannot be blank")
+				return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`start_side` cannot be blank")
 			}
 			input.StartSide = &startSide
 		}

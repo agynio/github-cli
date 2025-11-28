@@ -98,7 +98,7 @@ func TestReplyToReviewCommentREST(t *testing.T) {
 	defer reg.Verify(t)
 
 	reg.Register(
-		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/comments/42/replies"),
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/comments/42/replies"),
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)

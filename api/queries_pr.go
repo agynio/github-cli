@@ -981,8 +981,13 @@ func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber
 }
 
 // ReplyToReviewCommentREST creates a reply within an existing review comment thread.
-func ReplyToReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, commentID int64, body string) (*PullRequestReviewCommentREST, error) {
-	path := fmt.Sprintf("%s/comments/%d/replies", reviewBasePath(repo, prNumber), commentID)
+func ReplyToReviewCommentREST(client *Client, repo ghrepo.Interface, _ int, commentID int64, body string) (*PullRequestReviewCommentREST, error) {
+	path := fmt.Sprintf(
+		"repos/%s/%s/pulls/comments/%d/replies",
+		url.PathEscape(repo.RepoOwner()),
+		url.PathEscape(repo.RepoName()),
+		commentID,
+	)
 	payload := struct {
 		Body string `json:"body"`
 	}{Body: body}

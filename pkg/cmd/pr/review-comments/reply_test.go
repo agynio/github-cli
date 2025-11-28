@@ -22,7 +22,7 @@ func TestReplyCreatesComment(t *testing.T) {
 	httpmock.ReplaceTripper(httpClient, reg)
 
 	reg.Register(
-		httpmock.REST("POST", "repos/OWNER/REPO/pulls/123/comments/456/replies"),
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/comments/456/replies"),
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
