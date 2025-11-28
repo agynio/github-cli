@@ -57,7 +57,7 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
-			require.JSONEq(t, `{"body":"Looks good","path":"file.go","line":123,"side":"RIGHT"}`, string(body))
+			require.JSONEq(t, `{"body":"Looks good","commit_id":"abc123","path":"file.go","line":123,"side":"RIGHT"}`, string(body))
 
 			return httpmock.StatusJSONResponse(201, map[string]interface{}{
 				"id":                     555,
@@ -80,7 +80,8 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 
 	client := newTestClient(reg)
 	repo := ghrepo.New("OWNER", "REPO")
-	comment, err := AddPendingReviewCommentREST(client, repo, 7, 99, PendingReviewCommentInput{
+	review := &PullRequestReviewREST{ID: 99, NodeID: "PRR_node", CommitID: "abc123"}
+	comment, err := AddPendingReviewCommentREST(client, repo, 7, review, PendingReviewCommentInput{
 		Body: "Looks good",
 		Path: "file.go",
 		Line: intPtr(123),
@@ -93,12 +94,53 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 	require.Equal(t, 123, *comment.Line)
 }
 
+func TestAddPendingReviewCommentREST_FallbackToGraphQL(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/99/comments"),
+		httpmock.StatusJSONResponse(404, map[string]interface{}{
+			"message": "Not Found",
+		}),
+	)
+
+	reg.Register(
+		httpmock.GraphQL(`AddPullRequestReviewThread`),
+		httpmock.GraphQLMutation(`{"data":{"addPullRequestReviewThread":{"thread":{"comments":{"nodes":[{"id":"PRRC_node","databaseId":555,"body":"Looks good","diffHunk":"diff","path":"file.go","position":null,"originalPosition":5,"line":123,"startLine":null,"commit":{"oid":"abc123"},"originalCommit":{"oid":"abc123"},"authorAssociation":"MEMBER","url":"https://example.com/comment","createdAt":"2020-01-01T00:00:00Z","updatedAt":"2020-01-01T00:00:00Z","pullRequestReview":{"databaseId":99},"replyTo":null,"author":{"login":"monalisa"}}]}}}}}`,
+			func(input map[string]interface{}) {
+				require.Equal(t, "PRR_node", input["pullRequestReviewId"])
+				require.Equal(t, "Looks good", input["body"])
+				require.Equal(t, "file.go", input["path"])
+				require.Equal(t, float64(123), input["line"])
+				require.Equal(t, "RIGHT", input["side"])
+				require.Equal(t, "LINE", input["subjectType"])
+			}),
+	)
+
+	client := newTestClient(reg)
+	repo := ghrepo.New("OWNER", "REPO")
+	review := &PullRequestReviewREST{ID: 99, NodeID: "PRR_node", CommitID: "abc123"}
+	comment, err := AddPendingReviewCommentREST(client, repo, 7, review, PendingReviewCommentInput{
+		Body: "Looks good",
+		Path: "file.go",
+		Line: intPtr(123),
+		Side: strPtr("RIGHT"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(555), comment.ID)
+	require.Equal(t, "file.go", comment.Path)
+	require.NotNil(t, comment.Line)
+	require.Equal(t, 123, *comment.Line)
+	require.Equal(t, "abc123", comment.CommitID)
+}
+
 func TestReplyToReviewCommentREST(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
 
 	reg.Register(
-		httpmock.REST("POST", "repos/OWNER/REPO/pulls/comments/42/replies"),
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/comments/42/replies"),
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)

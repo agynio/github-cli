@@ -2,11 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
 	"testing"
 
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBranchDeleteRemote(t *testing.T) {
@@ -135,4 +138,87 @@ func Test_Logins(t *testing.T) {
 			assert.Equal(t, tt.want, logins)
 		})
 	}
+}
+
+func TestListPullRequestFilePaths(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.REST("POST", "graphql"),
+		func(req *http.Request) (*http.Response, error) {
+			var body struct {
+				Query     string                 `json:"query"`
+				Variables map[string]interface{} `json:"variables"`
+			}
+			payload, err := io.ReadAll(req.Body)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(payload, &body); err != nil {
+				return nil, err
+			}
+
+			assert.Nil(t, body.Variables["after"])
+			return httpmock.StatusJSONResponse(200, map[string]interface{}{
+				"data": map[string]interface{}{
+					"repository": map[string]interface{}{
+						"pullRequest": map[string]interface{}{
+							"files": map[string]interface{}{
+								"nodes": []map[string]interface{}{{"path": "README.md"}},
+								"pageInfo": map[string]interface{}{
+									"hasNextPage": true,
+									"endCursor":   "cursor1",
+								},
+							},
+						},
+					},
+				},
+			})(req)
+		},
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "graphql"),
+		func(req *http.Request) (*http.Response, error) {
+			var body struct {
+				Query     string                 `json:"query"`
+				Variables map[string]interface{} `json:"variables"`
+			}
+			payload, err := io.ReadAll(req.Body)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(payload, &body); err != nil {
+				return nil, err
+			}
+
+			require.Equal(t, "cursor1", body.Variables["after"])
+			return httpmock.StatusJSONResponse(200, map[string]interface{}{
+				"data": map[string]interface{}{
+					"repository": map[string]interface{}{
+						"pullRequest": map[string]interface{}{
+							"files": map[string]interface{}{
+								"nodes": []map[string]interface{}{{"path": "app.go"}},
+								"pageInfo": map[string]interface{}{
+									"hasNextPage": false,
+									"endCursor":   nil,
+								},
+							},
+						},
+					},
+				},
+			})(req)
+		},
+	)
+
+	client := newTestClient(reg)
+	repo := ghrepo.New("OWNER", "REPO")
+
+	paths, err := ListPullRequestFilePaths(client, repo, 10)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]struct{}{
+		"README.md": {},
+		"app.go":    {},
+	}, paths)
 }

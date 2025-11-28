@@ -213,4 +213,5 @@ The CLI tool itself is also customizable. These are all tools at your disposal w
 - Preferences: [`gh config set`](https://cli.github.com/manual/gh_config_set)
 - Reviews in progress: [`gh pr review open`](https://cli.github.com/manual/gh_pr_review_open), [`gh pr review add-comment`](https://cli.github.com/manual/gh_pr_review_add-comment), [`gh pr review submit`](https://cli.github.com/manual/gh_pr_review_submit), [`gh pr review abort`](https://cli.github.com/manual/gh_pr_review_abort)
 - Inline discussion threads: [`gh pr review-comments view`](https://cli.github.com/manual/gh_pr_review-comments_view), [`gh pr review-comments reply`](https://cli.github.com/manual/gh_pr_review-comments_reply)
+- Inline comment workflows validate review state and diff locations locally and surface precise remediation guidance when GitHub reports conflicts, missing pending reviews, or out-of-date file paths.
 - Environment variables: `NO_COLOR`, `EDITOR`, etc

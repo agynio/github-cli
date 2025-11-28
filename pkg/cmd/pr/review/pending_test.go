@@ -81,11 +81,30 @@ func TestReviewAddComment(t *testing.T) {
 	factory, out := setupFactory(t, reg)
 
 	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"id":                 88,
+			"node_id":            "PRR_node",
+			"state":              "PENDING",
+			"commit_id":          "abc123",
+			"html_url":           "https://github.com/OWNER/REPO/pull/7#review-88",
+			"author_association": "OWNER",
+		}),
+	)
+
+	reg.Register(
+		httpmock.GraphQL(`query PullRequestFilePaths\b`),
+		httpmock.GraphQLQuery(`{"data":{"repository":{"pullRequest":{"files":{"nodes":[{"path":"src/app.go"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, func(_ string, variables map[string]interface{}) {
+			require.Equal(t, float64(100), variables["perPage"])
+		}),
+	)
+
+	reg.Register(
 		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/88/comments"),
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
-			require.Equal(t, "{\"body\":\"ping\",\"path\":\"src/app.go\",\"position\":3}", string(bytes.TrimSpace(body)))
+			require.Equal(t, "{\"body\":\"ping\",\"commit_id\":\"abc123\",\"path\":\"src/app.go\",\"position\":3}", string(bytes.TrimSpace(body)))
 
 			payload := map[string]interface{}{
 				"id":                     901,

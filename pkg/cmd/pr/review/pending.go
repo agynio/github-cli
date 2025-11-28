@@ -2,6 +2,7 @@ package review
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -198,6 +199,19 @@ func addCommentRun(opts *addCommentOptions) error {
 	}
 	client := api.NewClientFromHTTP(httpClient)
 
+	review, err := api.GetPullRequestReviewREST(client, repo, pr.Number, opts.ReviewID)
+	if err != nil {
+		return translateReviewLookupError(err, opts.ReviewID)
+	}
+	if !strings.EqualFold(review.State, "PENDING") {
+		return cmdutil.FlagErrorf("review %d is no longer pending; open a new review before adding comments", opts.ReviewID)
+	}
+
+	diffPaths, err := api.ListPullRequestFilePaths(client, repo, pr.Number)
+	if err != nil {
+		return fmt.Errorf("failed to list pull request files: %w", err)
+	}
+
 	inputs, err := collectPendingCommentInputs(opts)
 	if err != nil {
 		return err
@@ -210,9 +224,12 @@ func addCommentRun(opts *addCommentOptions) error {
 		if err != nil {
 			return fmt.Errorf("comment %d: %w", idx+1, err)
 		}
-		created, err := api.AddPendingReviewCommentREST(client, repo, pr.Number, opts.ReviewID, normalized)
+		if _, ok := diffPaths[normalized.Path]; !ok {
+			return fmt.Errorf("comment %d: path %q is not part of the pull request diff", idx+1, normalized.Path)
+		}
+		created, err := api.AddPendingReviewCommentREST(client, repo, pr.Number, review, normalized)
 		if err != nil {
-			return err
+			return fmt.Errorf("comment %d: %w", idx+1, interpretAddCommentError(err, normalized.Path, opts.ReviewID))
 		}
 		outputs = append(outputs, prshared.NewReviewCommentOutput(*created))
 	}
@@ -305,6 +322,75 @@ func normalizePendingCommentInput(input api.PendingReviewCommentInput) (api.Pend
 	}
 
 	return input, nil
+}
+
+func translateReviewLookupError(err error, reviewID int64) error {
+	var httpErr api.HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case http.StatusNotFound:
+			return cmdutil.FlagErrorf("pending review %d could not be found or is not accessible", reviewID)
+		case http.StatusForbidden:
+			if suggestion := httpErr.ScopesSuggestion(); suggestion != "" {
+				return cmdutil.FlagErrorf("%s", suggestion)
+			}
+		}
+		return fmt.Errorf("failed to load review %d: %w", reviewID, httpErr)
+	}
+	return err
+}
+
+func interpretAddCommentError(err error, path string, reviewID int64) error {
+	var httpErr api.HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case http.StatusNotFound:
+			return cmdutil.FlagErrorf("review %d is no longer pending or owned by you", reviewID)
+		case http.StatusUnprocessableEntity:
+			if msg := firstValidationMessage(httpErr); msg != "" {
+				return cmdutil.FlagErrorf("%s", msg)
+			}
+			return cmdutil.FlagErrorf("GitHub rejected the comment for %q: %s", path, httpErr.Error())
+		case http.StatusForbidden:
+			if suggestion := httpErr.ScopesSuggestion(); suggestion != "" {
+				return cmdutil.FlagErrorf("%s", suggestion)
+			}
+		}
+		return httpErr
+	}
+
+	var gqlErr api.GraphQLError
+	if errors.As(err, &gqlErr) {
+		if msg := firstGraphQLErrorMessage(gqlErr); msg != "" {
+			return cmdutil.FlagErrorf("%s", msg)
+		}
+		return gqlErr
+	}
+
+	return err
+}
+
+func firstValidationMessage(httpErr api.HTTPError) string {
+	if httpErr.HTTPError == nil {
+		return ""
+	}
+	if len(httpErr.Errors) > 0 {
+		if msg := strings.TrimSpace(httpErr.Errors[0].Message); msg != "" {
+			return msg
+		}
+	}
+	return strings.TrimSpace(httpErr.Message)
+}
+
+func firstGraphQLErrorMessage(gqlErr api.GraphQLError) string {
+	if gqlErr.GraphQLError == nil {
+		return ""
+	}
+	errs := gqlErr.Errors
+	if len(errs) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(errs[0].Message)
 }
 
 type submitOptions struct {

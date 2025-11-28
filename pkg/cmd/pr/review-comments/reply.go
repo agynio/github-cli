@@ -1,6 +1,7 @@
 package reviewcomments
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -111,7 +112,7 @@ func replyRun(opts *ReplyOptions) error {
 
 	created, err := api.ReplyToReviewCommentREST(apiClient, repo, pr.Number, opts.CommentID, opts.Body)
 	if err != nil {
-		return err
+		return interpretReplyError(err, opts.CommentID)
 	}
 
 	output := prshared.NewReviewCommentOutput(*created)
@@ -133,4 +134,42 @@ func findPullRequestForReply(opts *ReplyOptions) (*api.PullRequest, ghrepo.Inter
 		return nil, nil, err
 	}
 	return pr, repo, nil
+}
+
+func interpretReplyError(err error, commentID int64) error {
+	var httpErr api.HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case http.StatusNotFound:
+			return cmdutil.FlagErrorf("review comment %d could not be found or is not accessible", commentID)
+		case http.StatusUnprocessableEntity:
+			msg := firstHTTPValidationMessage(httpErr)
+			if strings.Contains(strings.ToLower(msg), "pending review") {
+				return cmdutil.FlagErrorf("submit or abort your pending review before replying to inline comments")
+			}
+			if msg != "" {
+				return cmdutil.FlagErrorf("%s", msg)
+			}
+			return cmdutil.FlagErrorf("GitHub rejected the reply: %s", httpErr.Error())
+		case http.StatusForbidden:
+			if suggestion := httpErr.ScopesSuggestion(); suggestion != "" {
+				return cmdutil.FlagErrorf("%s", suggestion)
+			}
+		}
+		return httpErr
+	}
+
+	return err
+}
+
+func firstHTTPValidationMessage(httpErr api.HTTPError) string {
+	if httpErr.HTTPError == nil {
+		return ""
+	}
+	if len(httpErr.Errors) > 0 {
+		if msg := strings.TrimSpace(httpErr.Errors[0].Message); msg != "" {
+			return msg
+		}
+	}
+	return strings.TrimSpace(httpErr.Message)
 }

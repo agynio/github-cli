@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -950,6 +951,16 @@ type simpleUser struct {
 	NodeID string `json:"node_id"`
 }
 
+// GetPullRequestReviewREST retrieves a single pull request review via REST.
+func GetPullRequestReviewREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64) (*PullRequestReviewREST, error) {
+	path := fmt.Sprintf("%s/reviews/%d", reviewBasePath(repo, prNumber), reviewID)
+	var review PullRequestReviewREST
+	if err := client.REST(repo.RepoHost(), http.MethodGet, path, nil, &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
 // CreatePendingReviewREST opens a pending review for the specified pull request.
 func CreatePendingReviewREST(client *Client, repo ghrepo.Interface, prNumber int, input PendingReviewInput) (*PullRequestReviewREST, error) {
 	path := fmt.Sprintf("%s/reviews", reviewBasePath(repo, prNumber))
@@ -966,28 +977,393 @@ func CreatePendingReviewREST(client *Client, repo ghrepo.Interface, prNumber int
 }
 
 // AddPendingReviewCommentREST adds a draft comment to an existing pending review.
-func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, input PendingReviewCommentInput) (*PullRequestReviewCommentREST, error) {
-	path := fmt.Sprintf("%s/reviews/%d/comments", reviewBasePath(repo, prNumber), reviewID)
+func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, review *PullRequestReviewREST, input PendingReviewCommentInput) (*PullRequestReviewCommentREST, error) {
+	if review == nil {
+		return nil, errors.New("review reference is required")
+	}
+
+	payload := map[string]interface{}{
+		"body": input.Body,
+		"path": input.Path,
+	}
+
+	if review.CommitID != "" {
+		payload["commit_id"] = review.CommitID
+	}
+
+	if input.Position != nil {
+		payload["position"] = *input.Position
+	} else {
+		if input.Line != nil {
+			payload["line"] = *input.Line
+		}
+		if input.Side != nil {
+			payload["side"] = *input.Side
+		}
+		if input.StartLine != nil {
+			payload["start_line"] = *input.StartLine
+		}
+		if input.StartSide != nil {
+			payload["start_side"] = *input.StartSide
+		}
+	}
+
 	buf := &bytes.Buffer{}
-	if err := json.NewEncoder(buf).Encode(input); err != nil {
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
 		return nil, err
 	}
 
+	path := fmt.Sprintf("%s/reviews/%d/comments", reviewBasePath(repo, prNumber), review.ID)
+
 	var comment PullRequestReviewCommentREST
-	if err := client.REST(repo.RepoHost(), "POST", path, buf, &comment); err != nil {
+	err := client.REST(repo.RepoHost(), http.MethodPost, path, buf, &comment)
+	if err == nil {
+		return &comment, nil
+	}
+
+	var httpErr HTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.StatusCode == http.StatusNotFound {
+			fallback, fallbackErr := addPendingReviewCommentGraphQL(client, repo, review, input)
+			if fallbackErr == nil {
+				return fallback, nil
+			}
+			return nil, fallbackErr
+		}
+	}
+
+	return nil, err
+}
+
+type graphQLReviewComment struct {
+	ID               githubv4.ID
+	DatabaseID       githubv4.Int
+	Body             githubv4.String
+	DiffHunk         githubv4.String
+	Path             githubv4.String
+	Position         *githubv4.Int
+	OriginalPosition githubv4.Int
+	Line             *githubv4.Int
+	StartLine        *githubv4.Int
+	Commit           *struct {
+		OID githubv4.GitObjectID
+	}
+	OriginalCommit *struct {
+		OID githubv4.GitObjectID
+	}
+	AuthorAssociation githubv4.CommentAuthorAssociation
+	URL               githubv4.URI
+	CreatedAt         githubv4.DateTime
+	UpdatedAt         githubv4.DateTime
+	PullRequestReview *struct {
+		DatabaseID githubv4.Int
+	}
+	ReplyTo *struct {
+		DatabaseID githubv4.Int
+	} `graphql:"replyTo"`
+	Author struct {
+		Login githubv4.String
+		User  *struct {
+			DatabaseID githubv4.Int
+			ID         githubv4.ID
+		} `graphql:"... on User"`
+		Bot *struct {
+			ID githubv4.ID
+		} `graphql:"... on Bot"`
+		Organization *struct {
+			ID githubv4.ID
+		} `graphql:"... on Organization"`
+	}
+}
+
+func addPendingReviewCommentGraphQL(client *Client, repo ghrepo.Interface, review *PullRequestReviewREST, input PendingReviewCommentInput) (*PullRequestReviewCommentREST, error) {
+	if review == nil {
+		return nil, errors.New("review reference is required")
+	}
+	if review.NodeID == "" {
+		return nil, fmt.Errorf("review %d is missing node identifier", review.ID)
+	}
+
+	if input.Position != nil {
+		return addPendingReviewCommentGraphQLWithPosition(client, repo, review, input)
+	}
+	return addPendingReviewCommentGraphQLWithThread(client, repo, review, input)
+}
+
+func addPendingReviewCommentGraphQLWithPosition(client *Client, repo ghrepo.Interface, review *PullRequestReviewREST, input PendingReviewCommentInput) (*PullRequestReviewCommentREST, error) {
+	reviewID := githubv4.ID(review.NodeID)
+	body := githubv4.String(input.Body)
+	path := githubv4.String(input.Path)
+	gqlInput := githubv4.AddPullRequestReviewCommentInput{
+		PullRequestReviewID: &reviewID,
+		Body:                &body,
+		Path:                &path,
+	}
+
+	if review.CommitID != "" {
+		commitOID := githubv4.GitObjectID(review.CommitID)
+		gqlInput.CommitOID = &commitOID
+	}
+
+	pos := githubv4.Int(*input.Position)
+	gqlInput.Position = &pos
+
+	var mutation struct {
+		AddPullRequestReviewComment struct {
+			Comment graphQLReviewComment `graphql:"comment"`
+		} `graphql:"addPullRequestReviewComment(input:$input)"`
+	}
+
+	variables := map[string]interface{}{
+		"input": gqlInput,
+	}
+
+	if err := client.Mutate(repo.RepoHost(), "AddPullRequestReviewComment", &mutation, variables); err != nil {
 		return nil, err
 	}
-	return &comment, nil
+
+	return convertGraphQLReviewComment(mutation.AddPullRequestReviewComment.Comment, review, input), nil
+}
+
+func addPendingReviewCommentGraphQLWithThread(client *Client, repo ghrepo.Interface, review *PullRequestReviewREST, input PendingReviewCommentInput) (*PullRequestReviewCommentREST, error) {
+	reviewID := githubv4.ID(review.NodeID)
+	gqlInput := githubv4.AddPullRequestReviewThreadInput{
+		Path: githubv4.String(input.Path),
+		Body: githubv4.String(input.Body),
+	}
+	gqlInput.PullRequestReviewID = &reviewID
+
+	if input.Line != nil {
+		line := githubv4.Int(*input.Line)
+		gqlInput.Line = &line
+		subject := githubv4.PullRequestReviewThreadSubjectTypeLine
+		gqlInput.SubjectType = &subject
+	}
+	if input.Side != nil {
+		side, err := toDiffSide(*input.Side)
+		if err != nil {
+			return nil, err
+		}
+		gqlInput.Side = &side
+	}
+	if input.StartLine != nil {
+		start := githubv4.Int(*input.StartLine)
+		gqlInput.StartLine = &start
+	}
+	if input.StartSide != nil {
+		startSide, err := toDiffSide(*input.StartSide)
+		if err != nil {
+			return nil, err
+		}
+		gqlInput.StartSide = &startSide
+	}
+
+	var mutation struct {
+		AddPullRequestReviewThread struct {
+			Thread struct {
+				Comments struct {
+					Nodes []graphQLReviewComment `graphql:"nodes"`
+				} `graphql:"comments(first:1)"`
+			} `graphql:"thread"`
+		} `graphql:"addPullRequestReviewThread(input:$input)"`
+	}
+
+	variables := map[string]interface{}{
+		"input": gqlInput,
+	}
+
+	if err := client.Mutate(repo.RepoHost(), "AddPullRequestReviewThread", &mutation, variables); err != nil {
+		return nil, err
+	}
+
+	nodes := mutation.AddPullRequestReviewThread.Thread.Comments.Nodes
+	if len(nodes) == 0 {
+		return nil, errors.New("graphQL thread response did not include a comment")
+	}
+
+	return convertGraphQLReviewComment(nodes[0], review, input), nil
+}
+
+func convertGraphQLReviewComment(comment graphQLReviewComment, review *PullRequestReviewREST, source PendingReviewCommentInput) *PullRequestReviewCommentREST {
+	toIntPtr := func(v *githubv4.Int) *int {
+		if v == nil {
+			return nil
+		}
+		value := int(*v)
+		return &value
+	}
+
+	cloneString := func(v *string) *string {
+		if v == nil {
+			return nil
+		}
+		copy := *v
+		return &copy
+	}
+
+	commitID := review.CommitID
+	if comment.Commit != nil {
+		commitID = string(comment.Commit.OID)
+	}
+
+	originalCommitID := ""
+	if comment.OriginalCommit != nil {
+		originalCommitID = string(comment.OriginalCommit.OID)
+	}
+
+	prReviewID := review.ID
+	if comment.PullRequestReview != nil && int64(comment.PullRequestReview.DatabaseID) != 0 {
+		prReviewID = int64(comment.PullRequestReview.DatabaseID)
+	}
+
+	var inReplyTo *int64
+	if comment.ReplyTo != nil {
+		value := int64(comment.ReplyTo.DatabaseID)
+		inReplyTo = &value
+	}
+
+	var htmlURL string
+	if comment.URL.URL != nil {
+		htmlURL = comment.URL.URL.String()
+	}
+
+	author := comment.Author
+	var user *simpleUser
+	if author.Login != "" || author.User != nil || author.Bot != nil || author.Organization != nil {
+		user = &simpleUser{}
+		if author.Login != "" {
+			user.Login = string(author.Login)
+		}
+		switch {
+		case author.User != nil:
+			user.ID = int64(author.User.DatabaseID)
+			user.NodeID = stringFromGraphQLID(author.User.ID)
+		case author.Bot != nil:
+			user.NodeID = stringFromGraphQLID(author.Bot.ID)
+		case author.Organization != nil:
+			user.NodeID = stringFromGraphQLID(author.Organization.ID)
+		}
+	}
+
+	return &PullRequestReviewCommentREST{
+		ID:                  int64(comment.DatabaseID),
+		NodeID:              stringFromGraphQLID(comment.ID),
+		Body:                string(comment.Body),
+		DiffHunk:            string(comment.DiffHunk),
+		Path:                string(comment.Path),
+		Position:            toIntPtr(comment.Position),
+		OriginalPosition:    int(comment.OriginalPosition),
+		Line:                toIntPtr(comment.Line),
+		Side:                cloneString(source.Side),
+		StartLine:           toIntPtr(comment.StartLine),
+		StartSide:           cloneString(source.StartSide),
+		CommitID:            commitID,
+		OriginalCommitID:    originalCommitID,
+		AuthorAssociation:   string(comment.AuthorAssociation),
+		HTMLURL:             htmlURL,
+		URL:                 htmlURL,
+		PullRequestReviewID: prReviewID,
+		InReplyToID:         inReplyTo,
+		CreatedAt:           comment.CreatedAt.Time,
+		UpdatedAt:           comment.UpdatedAt.Time,
+		User:                user,
+	}
+}
+
+func toDiffSide(value string) (githubv4.DiffSide, error) {
+	switch value {
+	case "LEFT":
+		return githubv4.DiffSideLeft, nil
+	case "RIGHT":
+		return githubv4.DiffSideRight, nil
+	default:
+		return "", fmt.Errorf("unsupported diff side %q", value)
+	}
+}
+
+func stringFromGraphQLID(id githubv4.ID) string {
+	if id == nil {
+		return ""
+	}
+	switch v := id.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// ListPullRequestFilePaths retrieves the set of file paths included in a pull request diff.
+func ListPullRequestFilePaths(client *Client, repo ghrepo.Interface, prNumber int) (map[string]struct{}, error) {
+	type fileNode struct {
+		Path githubv4.String
+	}
+	type pageInfo struct {
+		HasNextPage githubv4.Boolean
+		EndCursor   githubv4.String
+	}
+	var query struct {
+		Repository struct {
+			PullRequest struct {
+				Files struct {
+					Nodes    []fileNode
+					PageInfo pageInfo
+				} `graphql:"files(first:$perPage, after:$after)"`
+			} `graphql:"pullRequest(number:$number)"`
+		} `graphql:"repository(owner:$owner,name:$name)"`
+	}
+
+	owner := repo.RepoOwner()
+	name := repo.RepoName()
+
+	result := make(map[string]struct{})
+	var after *githubv4.String
+
+	for {
+		query = struct {
+			Repository struct {
+				PullRequest struct {
+					Files struct {
+						Nodes    []fileNode
+						PageInfo pageInfo
+					} `graphql:"files(first:$perPage, after:$after)"`
+				} `graphql:"pullRequest(number:$number)"`
+			} `graphql:"repository(owner:$owner,name:$name)"`
+		}{}
+
+		variables := map[string]interface{}{
+			"owner":   githubv4.String(owner),
+			"name":    githubv4.String(name),
+			"number":  githubv4.Int(prNumber),
+			"perPage": githubv4.Int(100),
+			"after":   after,
+		}
+
+		if err := client.Query(repo.RepoHost(), "PullRequestFilePaths", &query, variables); err != nil {
+			return nil, err
+		}
+
+		pr := query.Repository.PullRequest
+		for _, node := range pr.Files.Nodes {
+			result[string(node.Path)] = struct{}{}
+		}
+
+		if !bool(pr.Files.PageInfo.HasNextPage) {
+			break
+		}
+
+		cursor := pr.Files.PageInfo.EndCursor
+		after = &cursor
+	}
+
+	return result, nil
 }
 
 // ReplyToReviewCommentREST creates a reply within an existing review comment thread.
-func ReplyToReviewCommentREST(client *Client, repo ghrepo.Interface, _ int, commentID int64, body string) (*PullRequestReviewCommentREST, error) {
-	path := fmt.Sprintf(
-		"repos/%s/%s/pulls/comments/%d/replies",
-		url.PathEscape(repo.RepoOwner()),
-		url.PathEscape(repo.RepoName()),
-		commentID,
-	)
+func ReplyToReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, commentID int64, body string) (*PullRequestReviewCommentREST, error) {
+	path := fmt.Sprintf("%s/comments/%d/replies", reviewBasePath(repo, prNumber), commentID)
 	payload := struct {
 		Body string `json:"body"`
 	}{Body: body}
