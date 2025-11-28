@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/cli/cli/v2/internal/ghrepo"
@@ -873,4 +874,204 @@ func ComparePullRequestBaseBranchWith(client *Client, repo ghrepo.Interface, prN
 		return nil, err
 	}
 	return &result.Repository.PullRequest.BaseRef.Compare, nil
+}
+
+// PendingReviewInput represents the payload for creating a pending review via the REST API.
+type PendingReviewInput struct {
+	Body     string `json:"body,omitempty"`
+	CommitID string `json:"commit_id,omitempty"`
+}
+
+// PendingReviewCommentInput represents the payload for adding a draft comment to a pending review.
+type PendingReviewCommentInput struct {
+	Body      string  `json:"body"`
+	Path      string  `json:"path"`
+	Position  *int    `json:"position,omitempty"`
+	Line      *int    `json:"line,omitempty"`
+	Side      *string `json:"side,omitempty"`
+	StartLine *int    `json:"start_line,omitempty"`
+	StartSide *string `json:"start_side,omitempty"`
+}
+
+// SubmitReviewInput represents the payload for finalizing a pending review.
+type SubmitReviewInput struct {
+	Event string `json:"event"`
+	Body  string `json:"body,omitempty"`
+}
+
+// ReviewCommentsListParams encapsulates pagination options when listing review comments.
+type ReviewCommentsListParams struct {
+	PerPage int
+	Page    int
+}
+
+// PullRequestReviewREST models the REST payload for a pull request review.
+type PullRequestReviewREST struct {
+	ID                int64       `json:"id"`
+	NodeID            string      `json:"node_id"`
+	Body              string      `json:"body"`
+	State             string      `json:"state"`
+	CommitID          string      `json:"commit_id"`
+	AuthorAssociation string      `json:"author_association"`
+	SubmittedAt       *time.Time  `json:"submitted_at"`
+	HTMLURL           string      `json:"html_url"`
+	URL               string      `json:"url"`
+	User              *simpleUser `json:"user"`
+}
+
+// PullRequestReviewCommentREST models the REST payload for a review comment.
+type PullRequestReviewCommentREST struct {
+	ID                  int64       `json:"id"`
+	NodeID              string      `json:"node_id"`
+	Body                string      `json:"body"`
+	DiffHunk            string      `json:"diff_hunk"`
+	Path                string      `json:"path"`
+	Position            *int        `json:"position"`
+	OriginalPosition    int         `json:"original_position"`
+	Line                *int        `json:"line"`
+	Side                *string     `json:"side"`
+	StartLine           *int        `json:"start_line"`
+	StartSide           *string     `json:"start_side"`
+	CommitID            string      `json:"commit_id"`
+	OriginalCommitID    string      `json:"original_commit_id"`
+	AuthorAssociation   string      `json:"author_association"`
+	HTMLURL             string      `json:"html_url"`
+	URL                 string      `json:"url"`
+	PullRequestReviewID int64       `json:"pull_request_review_id"`
+	InReplyToID         *int64      `json:"in_reply_to_id"`
+	CreatedAt           time.Time   `json:"created_at"`
+	UpdatedAt           time.Time   `json:"updated_at"`
+	User                *simpleUser `json:"user"`
+}
+
+type simpleUser struct {
+	Login  string `json:"login"`
+	ID     int64  `json:"id"`
+	NodeID string `json:"node_id"`
+}
+
+// CreatePendingReviewREST opens a pending review for the specified pull request.
+func CreatePendingReviewREST(client *Client, repo ghrepo.Interface, prNumber int, input PendingReviewInput) (*PullRequestReviewREST, error) {
+	path := fmt.Sprintf("%s/reviews", reviewBasePath(repo, prNumber))
+	buf := &bytes.Buffer{}
+	if err := json.NewEncoder(buf).Encode(input); err != nil {
+		return nil, err
+	}
+
+	var review PullRequestReviewREST
+	if err := client.REST(repo.RepoHost(), "POST", path, buf, &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+// AddPendingReviewCommentREST adds a draft comment to an existing pending review.
+func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, input PendingReviewCommentInput) (*PullRequestReviewCommentREST, error) {
+	path := fmt.Sprintf("%s/reviews/%d/comments", reviewBasePath(repo, prNumber), reviewID)
+	buf := &bytes.Buffer{}
+	if err := json.NewEncoder(buf).Encode(input); err != nil {
+		return nil, err
+	}
+
+	var comment PullRequestReviewCommentREST
+	if err := client.REST(repo.RepoHost(), "POST", path, buf, &comment); err != nil {
+		return nil, err
+	}
+	return &comment, nil
+}
+
+// ReplyToReviewCommentREST creates a reply within an existing review comment thread.
+func ReplyToReviewCommentREST(client *Client, repo ghrepo.Interface, commentID int64, body string) (*PullRequestReviewCommentREST, error) {
+	path := fmt.Sprintf(
+		"repos/%s/%s/pulls/comments/%d/replies",
+		url.PathEscape(repo.RepoOwner()),
+		url.PathEscape(repo.RepoName()),
+		commentID,
+	)
+	payload := struct {
+		Body string `json:"body"`
+	}{Body: body}
+	buf := &bytes.Buffer{}
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
+		return nil, err
+	}
+
+	var comment PullRequestReviewCommentREST
+	if err := client.REST(repo.RepoHost(), "POST", path, buf, &comment); err != nil {
+		return nil, err
+	}
+	return &comment, nil
+}
+
+// SubmitPendingReviewREST finalizes the pending review with the provided terminal state.
+func SubmitPendingReviewREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, input SubmitReviewInput) (*PullRequestReviewREST, error) {
+	path := fmt.Sprintf("%s/reviews/%d/events", reviewBasePath(repo, prNumber), reviewID)
+	buf := &bytes.Buffer{}
+	if err := json.NewEncoder(buf).Encode(input); err != nil {
+		return nil, err
+	}
+
+	var review PullRequestReviewREST
+	if err := client.REST(repo.RepoHost(), "POST", path, buf, &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+// DeletePendingReviewREST aborts the pending review and discards draft comments.
+func DeletePendingReviewREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64) error {
+	path := fmt.Sprintf("%s/reviews/%d", reviewBasePath(repo, prNumber), reviewID)
+	return client.REST(repo.RepoHost(), "DELETE", path, nil, nil)
+}
+
+// ListReviewCommentsREST retrieves review comments for the specified review.
+func ListReviewCommentsREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, params ReviewCommentsListParams) ([]PullRequestReviewCommentREST, error) {
+	basePath := fmt.Sprintf("%s/reviews/%d/comments", reviewBasePath(repo, prNumber), reviewID)
+	query := url.Values{}
+	if params.PerPage > 0 {
+		query.Set("per_page", strconv.Itoa(params.PerPage))
+	}
+	if params.Page > 0 {
+		query.Set("page", strconv.Itoa(params.Page))
+	}
+	path := basePath
+	if encoded := query.Encode(); encoded != "" {
+		path = fmt.Sprintf("%s?%s", basePath, encoded)
+	}
+
+	var comments []PullRequestReviewCommentREST
+	if err := client.REST(repo.RepoHost(), "GET", path, nil, &comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+
+// ListPullRequestReviewsREST retrieves all reviews for the specified pull request.
+func ListPullRequestReviewsREST(client *Client, repo ghrepo.Interface, prNumber int) ([]PullRequestReviewREST, error) {
+	path := fmt.Sprintf("%s/reviews?per_page=100", reviewBasePath(repo, prNumber))
+	var all []PullRequestReviewREST
+
+	for path != "" {
+		var page []PullRequestReviewREST
+		next, err := client.RESTWithNext(repo.RepoHost(), "GET", path, nil, &page)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if next == "" {
+			break
+		}
+		path = next
+	}
+
+	return all, nil
+}
+
+func reviewBasePath(repo ghrepo.Interface, prNumber int) string {
+	return fmt.Sprintf(
+		"repos/%s/%s/pulls/%d",
+		url.PathEscape(repo.RepoOwner()),
+		url.PathEscape(repo.RepoName()),
+		prNumber,
+	)
 }
