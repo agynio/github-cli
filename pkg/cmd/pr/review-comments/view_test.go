@@ -33,6 +33,10 @@ func TestViewByReviewID_JSON(t *testing.T) {
 				"body":                   "Looks good",
 				"path":                   "src/main.go",
 				"position":               7,
+				"line":                   12,
+				"side":                   "RIGHT",
+				"start_line":             5,
+				"start_side":             "RIGHT",
 				"commit_id":              "abc",
 				"original_commit_id":     "abc",
 				"html_url":               "https://github.com/OWNER/REPO/pull/123#discussion_r1",
@@ -67,7 +71,7 @@ func TestViewByReviewID_JSON(t *testing.T) {
 
 	require.NoError(t, cmd.Execute())
 
-	expected := "[{\"id\":1,\"pullRequestReviewId\":456,\"body\":\"Looks good\",\"author\":\"octocat\",\"path\":\"src/main.go\",\"position\":7,\"commitId\":\"abc\",\"originalCommitId\":\"abc\",\"createdAt\":\"2024-10-01T12:00:00Z\",\"updatedAt\":\"2024-10-01T12:05:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/123#discussion_r1\"}]\n"
+	expected := "[{\"id\":1,\"pullRequestReviewId\":456,\"body\":\"Looks good\",\"author\":\"octocat\",\"path\":\"src/main.go\",\"position\":7,\"line\":12,\"side\":\"RIGHT\",\"startLine\":5,\"startSide\":\"RIGHT\",\"commitId\":\"abc\",\"originalCommitId\":\"abc\",\"createdAt\":\"2024-10-01T12:00:00Z\",\"updatedAt\":\"2024-10-01T12:05:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/123#discussion_r1\"}]\n"
 	require.Equal(t, expected, stdout.String())
 }
 

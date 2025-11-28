@@ -94,6 +94,54 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 	require.Equal(t, 123, *comment.Line)
 }
 
+func TestAddPendingReviewCommentREST_WithRange(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/99/comments"),
+		func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"body":"Looks good","commit_id":"abc123","path":"file.go","line":10,"side":"RIGHT","start_line":5,"start_side":"RIGHT"}`, string(body))
+
+			return httpmock.StatusJSONResponse(201, map[string]interface{}{
+				"id":                     556,
+				"body":                   "Looks good",
+				"path":                   "file.go",
+				"line":                   10,
+				"side":                   "RIGHT",
+				"start_line":             5,
+				"start_side":             "RIGHT",
+				"pull_request_review_id": 99,
+				"created_at":             "2020-01-01T00:00:00Z",
+				"updated_at":             "2020-01-01T00:00:00Z",
+				"user": map[string]interface{}{
+					"login": "monalisa",
+				},
+			})(req)
+		},
+	)
+
+	client := newTestClient(reg)
+	repo := ghrepo.New("OWNER", "REPO")
+	review := &PullRequestReviewREST{ID: 99, NodeID: "PRR_node", CommitID: "abc123"}
+	comment, err := AddPendingReviewCommentREST(client, repo, 7, review, PendingReviewCommentInput{
+		Body:      "Looks good",
+		Path:      "file.go",
+		Line:      intPtr(10),
+		Side:      strPtr("RIGHT"),
+		StartLine: intPtr(5),
+		StartSide: strPtr("RIGHT"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(556), comment.ID)
+	require.NotNil(t, comment.StartLine)
+	require.Equal(t, 5, *comment.StartLine)
+	require.NotNil(t, comment.StartSide)
+	require.Equal(t, "RIGHT", *comment.StartSide)
+}
+
 func TestAddPendingReviewCommentREST_FallbackToGraphQL(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
@@ -107,13 +155,15 @@ func TestAddPendingReviewCommentREST_FallbackToGraphQL(t *testing.T) {
 
 	reg.Register(
 		httpmock.GraphQL(`AddPullRequestReviewThread`),
-		httpmock.GraphQLMutation(`{"data":{"addPullRequestReviewThread":{"thread":{"comments":{"nodes":[{"id":"PRRC_node","databaseId":555,"body":"Looks good","diffHunk":"diff","path":"file.go","position":null,"originalPosition":5,"line":123,"startLine":null,"commit":{"oid":"abc123"},"originalCommit":{"oid":"abc123"},"authorAssociation":"MEMBER","url":"https://example.com/comment","createdAt":"2020-01-01T00:00:00Z","updatedAt":"2020-01-01T00:00:00Z","pullRequestReview":{"databaseId":99},"replyTo":null,"author":{"login":"monalisa"}}]}}}}}`,
+		httpmock.GraphQLMutation(`{"data":{"addPullRequestReviewThread":{"thread":{"comments":{"nodes":[{"id":"PRRC_node","databaseId":555,"body":"Looks good","diffHunk":"diff","path":"file.go","position":null,"originalPosition":5,"line":123,"startLine":50,"commit":{"oid":"abc123"},"originalCommit":{"oid":"abc123"},"authorAssociation":"MEMBER","url":"https://example.com/comment","createdAt":"2020-01-01T00:00:00Z","updatedAt":"2020-01-01T00:00:00Z","pullRequestReview":{"databaseId":99},"replyTo":null,"author":{"login":"monalisa"}}]}}}}}`,
 			func(input map[string]interface{}) {
 				require.Equal(t, "PRR_node", input["pullRequestReviewId"])
 				require.Equal(t, "Looks good", input["body"])
 				require.Equal(t, "file.go", input["path"])
 				require.Equal(t, float64(123), input["line"])
 				require.Equal(t, "RIGHT", input["side"])
+				require.Equal(t, float64(50), input["startLine"])
+				require.Equal(t, "RIGHT", input["startSide"])
 				require.Equal(t, "LINE", input["subjectType"])
 			}),
 	)
@@ -122,16 +172,22 @@ func TestAddPendingReviewCommentREST_FallbackToGraphQL(t *testing.T) {
 	repo := ghrepo.New("OWNER", "REPO")
 	review := &PullRequestReviewREST{ID: 99, NodeID: "PRR_node", CommitID: "abc123"}
 	comment, err := AddPendingReviewCommentREST(client, repo, 7, review, PendingReviewCommentInput{
-		Body: "Looks good",
-		Path: "file.go",
-		Line: intPtr(123),
-		Side: strPtr("RIGHT"),
+		Body:      "Looks good",
+		Path:      "file.go",
+		Line:      intPtr(123),
+		Side:      strPtr("RIGHT"),
+		StartLine: intPtr(50),
+		StartSide: strPtr("RIGHT"),
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(555), comment.ID)
 	require.Equal(t, "file.go", comment.Path)
 	require.NotNil(t, comment.Line)
 	require.Equal(t, 123, *comment.Line)
+	require.NotNil(t, comment.StartLine)
+	require.Equal(t, 50, *comment.StartLine)
+	require.NotNil(t, comment.StartSide)
+	require.Equal(t, "RIGHT", *comment.StartSide)
 	require.Equal(t, "abc123", comment.CommitID)
 }
 

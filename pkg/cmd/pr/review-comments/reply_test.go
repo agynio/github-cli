@@ -34,6 +34,10 @@ func TestReplyCreatesComment(t *testing.T) {
 				"in_reply_to_id":         456,
 				"body":                   "Thanks!",
 				"path":                   "src/app.go",
+				"line":                   18,
+				"side":                   "RIGHT",
+				"start_line":             11,
+				"start_side":             "RIGHT",
 				"html_url":               "https://github.com/OWNER/REPO/pull/123#discussion_r999",
 				"created_at":             "2024-10-01T12:00:00Z",
 				"updated_at":             "2024-10-01T12:00:00Z",
@@ -67,6 +71,6 @@ func TestReplyCreatesComment(t *testing.T) {
 
 	require.NoError(t, cmd.Execute())
 
-	expected := "{\"id\":999,\"pullRequestReviewId\":77,\"inReplyToId\":456,\"body\":\"Thanks!\",\"author\":\"octocat\",\"path\":\"src/app.go\",\"createdAt\":\"2024-10-01T12:00:00Z\",\"updatedAt\":\"2024-10-01T12:00:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/123#discussion_r999\"}\n"
+	expected := "{\"id\":999,\"pullRequestReviewId\":77,\"inReplyToId\":456,\"body\":\"Thanks!\",\"author\":\"octocat\",\"path\":\"src/app.go\",\"line\":18,\"side\":\"RIGHT\",\"startLine\":11,\"startSide\":\"RIGHT\",\"createdAt\":\"2024-10-01T12:00:00Z\",\"updatedAt\":\"2024-10-01T12:00:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/123#discussion_r999\"}\n"
 	require.Equal(t, expected, stdout.String())
 }

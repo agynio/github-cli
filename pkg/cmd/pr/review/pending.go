@@ -298,6 +298,11 @@ func normalizePendingCommentInput(input api.PendingReviewCommentInput) (api.Pend
 	if input.Position != nil && input.Line != nil {
 		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`position` cannot be combined with `line`")
 	}
+	if input.Position != nil {
+		if input.StartLine != nil || input.StartSide != nil {
+			return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`start_line` and `start_side` cannot be used with `position`")
+		}
+	}
 
 	if input.Line != nil {
 		if input.Side == nil {
@@ -308,6 +313,10 @@ func normalizePendingCommentInput(input api.PendingReviewCommentInput) (api.Pend
 			return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`side` cannot be blank")
 		}
 		input.Side = &side
+
+		if input.StartSide != nil && input.StartLine == nil {
+			return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`start_line` is required when `start_side` is provided")
+		}
 
 		if input.StartLine != nil {
 			if input.StartSide == nil {

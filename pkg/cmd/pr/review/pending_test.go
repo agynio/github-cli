@@ -140,6 +140,143 @@ func TestReviewAddComment(t *testing.T) {
 	require.Equal(t, expected, out.String())
 }
 
+func TestReviewAddCommentRange(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, out := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"id":        88,
+			"node_id":   "PRR_node",
+			"state":     "PENDING",
+			"commit_id": "abc123",
+			"html_url":  "https://github.com/OWNER/REPO/pull/7#review-88",
+		}),
+	)
+
+	reg.Register(
+		httpmock.GraphQL(`query PullRequestFilePaths\b`),
+		httpmock.GraphQLQuery(`{"data":{"repository":{"pullRequest":{"files":{"nodes":[{"path":"src/app.go"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, func(_ string, variables map[string]interface{}) {
+			require.Equal(t, float64(100), variables["perPage"])
+		}),
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/88/comments"),
+		func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"body":"range","commit_id":"abc123","path":"src/app.go","line":12,"side":"RIGHT","start_line":3,"start_side":"RIGHT"}`, string(body))
+
+			payload := map[string]interface{}{
+				"id":                     902,
+				"pull_request_review_id": 88,
+				"body":                   "range",
+				"path":                   "src/app.go",
+				"line":                   12,
+				"side":                   "RIGHT",
+				"start_line":             3,
+				"start_side":             "RIGHT",
+				"html_url":               "https://github.com/OWNER/REPO/pull/7#discussion_r902",
+				"created_at":             "2024-10-01T12:00:00Z",
+				"updated_at":             "2024-10-01T12:00:00Z",
+				"user": map[string]interface{}{
+					"login": "octocat",
+				},
+			}
+			return httpmock.JSONResponse(payload)(req)
+		},
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":12,"side":"RIGHT","start_line":3,"start_side":"RIGHT","body":"range"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	require.NoError(t, cmd.Execute())
+
+	expected := "[{\"id\":902,\"pullRequestReviewId\":88,\"body\":\"range\",\"author\":\"octocat\",\"path\":\"src/app.go\",\"line\":12,\"side\":\"RIGHT\",\"startLine\":3,\"startSide\":\"RIGHT\",\"createdAt\":\"2024-10-01T12:00:00Z\",\"updatedAt\":\"2024-10-01T12:00:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/7#discussion_r902\"}]\n"
+	require.Equal(t, expected, out.String())
+}
+
+func TestReviewAddCommentStartSideWithoutStartLine(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, _ := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"id":        88,
+			"node_id":   "PRR_node",
+			"state":     "PENDING",
+			"commit_id": "abc123",
+		}),
+	)
+
+	reg.Register(
+		httpmock.GraphQL(`query PullRequestFilePaths\b`),
+		httpmock.GraphQLQuery(`{"data":{"repository":{"pullRequest":{"files":{"nodes":[{"path":"src/app.go"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, func(_ string, variables map[string]interface{}) {
+			require.Equal(t, float64(100), variables["perPage"])
+		}),
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":12,"side":"RIGHT","start_side":"RIGHT","body":"range"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.EqualError(t, err, "comment 1: `start_line` is required when `start_side` is provided")
+}
+
+func TestReviewAddCommentRangeNotAllowedWithPosition(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, _ := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"id":        88,
+			"node_id":   "PRR_node",
+			"state":     "PENDING",
+			"commit_id": "abc123",
+		}),
+	)
+
+	reg.Register(
+		httpmock.GraphQL(`query PullRequestFilePaths\b`),
+		httpmock.GraphQLQuery(`{"data":{"repository":{"pullRequest":{"files":{"nodes":[{"path":"src/app.go"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, func(_ string, variables map[string]interface{}) {
+			require.Equal(t, float64(100), variables["perPage"])
+		}),
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","position":4,"start_line":3,"start_side":"RIGHT","body":"range"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.EqualError(t, err, "comment 1: `start_line` and `start_side` cannot be used with `position`")
+}
+
 func TestReviewSubmit(t *testing.T) {
 	reg := &httpmock.Registry{}
 	factory, out := setupFactory(t, reg)
