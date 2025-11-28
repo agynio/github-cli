@@ -284,7 +284,7 @@ func addCommentRun(opts *addCommentOptions) error {
 			comment.position = *input.Position
 		} else {
 			if file.Patch == nil || *file.Patch == "" {
-				return fmt.Errorf("comment %d: file %q has no diff available; provide `position` explicitly", idx+1, input.Path)
+				return fmt.Errorf("comment %d: file %q has no diff available; provide --position explicitly", idx+1, input.Path)
 			}
 
 			index, ok := diffCache[input.Path]
@@ -308,7 +308,11 @@ func addCommentRun(opts *addCommentOptions) error {
 
 			position, ok := lookup[line]
 			if !ok {
-				return fmt.Errorf("comment %d: line %d on %s is not part of the diff; choose a changed line or provide `position`", idx+1, line, input.Path)
+				commitLabel := "<unknown>"
+				if comment.commitID != nil && *comment.commitID != "" {
+					commitLabel = *comment.commitID
+				}
+				return fmt.Errorf("comment %d: line %d on %s is outside the diff at commit %s; choose a changed line or provide --position", idx+1, line, input.Path, commitLabel)
 			}
 			comment.position = position
 		}
@@ -390,7 +394,7 @@ func normalizePendingCommentInput(input commentInput) (commentInput, error) {
 	normalized.Body = input.Body
 
 	if input.StartLine != nil || input.StartSide != nil {
-		return commentInput{}, cmdutil.FlagErrorf("line ranges are not supported; provide `position` instead")
+		return commentInput{}, cmdutil.FlagErrorf("line ranges are not supported; provide --position instead")
 	}
 
 	if input.Position == nil && input.Line == nil {

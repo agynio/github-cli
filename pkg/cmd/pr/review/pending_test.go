@@ -235,7 +235,44 @@ func TestReviewAddCommentLineOutsideDiff(t *testing.T) {
 
 	err = cmd.Execute()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "line 10 on src/app.go is not part of the diff")
+	require.Contains(t, err.Error(), "line 10 on src/app.go is outside the diff at commit def456")
+}
+
+func TestReviewAddCommentRejectsUnknownPath(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, _ := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "abc123",
+		}),
+	)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
+		httpmock.StatusJSONResponse(200, []map[string]interface{}{
+			{"filename": "src/app.go", "status": "modified", "patch": "@@ -1 +1 @@\n-line\n+line\n"},
+		}),
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/other.go","position":5,"body":"oops"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `path "src/other.go" is not part of the changes for PR #7`)
 }
 
 func TestReviewSubmit(t *testing.T) {
