@@ -1,0 +1,4 @@
+E2E Review Test File 1
+Line A: implement minimal change
+Line B: add note for inline comment
+Line C: more lines for range comment
