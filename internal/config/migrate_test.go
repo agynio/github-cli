@@ -227,11 +227,6 @@ func makeFileUnwriteable(t *testing.T, file string) {
 	f.Close()
 
 	require.NoError(t, os.Chmod(file, 0000))
-
-	if f, err := os.OpenFile(file, os.O_WRONLY, 0); err == nil {
-		f.Close()
-		t.Skip("write protection checks unreliable on this platform")
-	}
 }
 
 func mockMigration(doFunc func(config *ghConfig.Config) error) *ghmock.MigrationMock {
