@@ -142,6 +142,11 @@ func NewCmdReview(f *cmdutil.Factory, runF func(*ReviewOptions) error) *cobra.Co
 	cmd.Flags().StringVarP(&opts.Body, "body", "b", "", "Specify the body of a review")
 	cmd.Flags().StringVarP(&bodyFile, "body-file", "F", "", "Read body text from `file` (use \"-\" to read from standard input)")
 
+	cmd.AddCommand(NewCmdReviewOpen(f, nil))
+	cmd.AddCommand(NewCmdReviewAddComment(f, nil))
+	cmd.AddCommand(NewCmdReviewSubmit(f, nil))
+	cmd.AddCommand(NewCmdReviewAbort(f, nil))
+
 	return cmd
 }
 
