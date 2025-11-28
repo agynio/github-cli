@@ -57,7 +57,7 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
-			require.JSONEq(t, `{"body":"Looks good","path":"file.go","line":123,"side":"RIGHT"}`, string(body))
+			require.JSONEq(t, `{"body":"Looks good","path":"file.go","position":123,"commit_id":"abc123"}`, string(body))
 
 			return httpmock.StatusJSONResponse(201, map[string]interface{}{
 				"id":                     555,
@@ -80,12 +80,8 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 
 	client := newTestClient(reg)
 	repo := ghrepo.New("OWNER", "REPO")
-	comment, err := AddPendingReviewCommentREST(client, repo, 7, 99, PendingReviewCommentInput{
-		Body: "Looks good",
-		Path: "file.go",
-		Line: intPtr(123),
-		Side: strPtr("RIGHT"),
-	})
+	commitID := "abc123"
+	comment, err := AddPendingReviewCommentREST(client, repo, 7, 99, "file.go", 123, "Looks good", &commitID)
 	require.NoError(t, err)
 	require.Equal(t, int64(555), comment.ID)
 	require.Equal(t, "file.go", comment.Path)
@@ -260,12 +256,4 @@ func TestListPullRequestReviewsREST(t *testing.T) {
 	require.Len(t, reviews, 2)
 	require.Equal(t, int64(1), reviews[0].ID)
 	require.Equal(t, int64(2), reviews[1].ID)
-}
-
-func intPtr(v int) *int {
-	return &v
-}
-
-func strPtr(v string) *string {
-	return &v
 }

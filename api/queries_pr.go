@@ -881,16 +881,6 @@ type PendingReviewInput struct {
 	CommitID string `json:"commit_id,omitempty"`
 }
 
-type PendingReviewCommentInput struct {
-	Body      string  `json:"body"`
-	Path      string  `json:"path"`
-	Position  *int    `json:"position,omitempty"`
-	Line      *int    `json:"line,omitempty"`
-	Side      *string `json:"side,omitempty"`
-	StartLine *int    `json:"start_line,omitempty"`
-	StartSide *string `json:"start_side,omitempty"`
-}
-
 type SubmitReviewInput struct {
 	Event string `json:"event"`
 	Body  string `json:"body,omitempty"`
@@ -938,6 +928,12 @@ type PullRequestReviewCommentREST struct {
 	User                *simpleUser `json:"user"`
 }
 
+type PullRequestFileREST struct {
+	Filename string  `json:"filename"`
+	Status   string  `json:"status"`
+	Patch    *string `json:"patch"`
+}
+
 type simpleUser struct {
 	Login  string `json:"login"`
 	ID     int64  `json:"id"`
@@ -958,18 +954,57 @@ func CreatePendingReviewREST(client *Client, repo ghrepo.Interface, prNumber int
 	return &review, nil
 }
 
-func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, input PendingReviewCommentInput) (*PullRequestReviewCommentREST, error) {
-	path := fmt.Sprintf("%s/reviews/%d/comments", reviewBasePath(repo, prNumber), reviewID)
+func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, path string, position int, body string, commitID *string) (*PullRequestReviewCommentREST, error) {
+	payload := struct {
+		Body     string  `json:"body"`
+		Path     string  `json:"path"`
+		Position int     `json:"position"`
+		CommitID *string `json:"commit_id,omitempty"`
+	}{
+		Body:     body,
+		Path:     path,
+		Position: position,
+		CommitID: commitID,
+	}
+
+	endpoint := fmt.Sprintf("%s/reviews/%d/comments", reviewBasePath(repo, prNumber), reviewID)
 	buf := &bytes.Buffer{}
-	if err := json.NewEncoder(buf).Encode(input); err != nil {
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
 		return nil, err
 	}
 
 	var comment PullRequestReviewCommentREST
-	if err := client.REST(repo.RepoHost(), "POST", path, buf, &comment); err != nil {
+	if err := client.REST(repo.RepoHost(), "POST", endpoint, buf, &comment); err != nil {
 		return nil, err
 	}
 	return &comment, nil
+}
+
+func GetPullRequestReviewREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64) (*PullRequestReviewREST, error) {
+	endpoint := fmt.Sprintf("%s/reviews/%d", reviewBasePath(repo, prNumber), reviewID)
+	var review PullRequestReviewREST
+	if err := client.REST(repo.RepoHost(), "GET", endpoint, nil, &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+func ListPullRequestFilesREST(client *Client, repo ghrepo.Interface, prNumber int) ([]PullRequestFileREST, error) {
+	path := fmt.Sprintf("%s/files", reviewBasePath(repo, prNumber))
+	var all []PullRequestFileREST
+	for {
+		var page []PullRequestFileREST
+		next, err := client.RESTWithNext(repo.RepoHost(), "GET", path, nil, &page)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if next == "" {
+			break
+		}
+		path = next
+	}
+	return all, nil
 }
 
 func ReplyToReviewCommentREST(client *Client, repo ghrepo.Interface, commentID int64, body string) (*PullRequestReviewCommentREST, error) {

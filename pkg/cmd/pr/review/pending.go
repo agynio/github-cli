@@ -2,8 +2,10 @@ package review
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/MakeNowJust/heredoc"
@@ -126,6 +128,24 @@ type addCommentOptions struct {
 	Exporter      cmdutil.Exporter
 }
 
+type commentInput struct {
+	Path      string  `json:"path"`
+	Body      string  `json:"body"`
+	Position  *int    `json:"position,omitempty"`
+	Line      *int    `json:"line,omitempty"`
+	Side      *string `json:"side,omitempty"`
+	StartLine *int    `json:"start_line,omitempty"`
+	StartSide *string `json:"start_side,omitempty"`
+	CommitID  *string `json:"commit_id,omitempty"`
+}
+
+type resolvedComment struct {
+	path     string
+	position int
+	body     string
+	commitID *string
+}
+
 func NewCmdReviewAddComment(f *cmdutil.Factory, runF func(*addCommentOptions) error) *cobra.Command {
 	opts := &addCommentOptions{
 		IO:         f.IOStreams,
@@ -139,9 +159,10 @@ func NewCmdReviewAddComment(f *cmdutil.Factory, runF func(*addCommentOptions) er
 			Attach one or more inline comments to an existing pending review. Comments are
 			provided as JSON objects via repeated --add-comment flags or a JSON file.
 
-			Each comment JSON must provide "path" and "body", plus either a "position"
-			integer or a combination of "line" and "side" (optionally "start_line" and
-			"start_side" for ranges).
+		Each comment JSON must provide "path" and "body", plus either a diff
+		"position" integer or a combination of "line" and "side". When using
+		"line"/"side", the CLI maps the requested line to the correct diff position
+		for the pull request patch.
 		`),
 		Example: heredoc.Doc(`
 			# Add a single position-based comment
@@ -197,21 +218,110 @@ func addCommentRun(opts *addCommentOptions) error {
 	}
 	client := api.NewClientFromHTTP(httpClient)
 
-	inputs, err := collectPendingCommentInputs(opts)
+	rawInputs, err := collectPendingCommentInputs(opts)
 	if err != nil {
 		return err
 	}
 
-	outputs := make([]prshared.ReviewCommentOutput, 0, len(inputs))
-	for idx, input := range inputs {
+	normalizedInputs := make([]commentInput, len(rawInputs))
+	for i, input := range rawInputs {
 		normalized, err := normalizePendingCommentInput(input)
 		if err != nil {
-			return fmt.Errorf("comment %d: %w", idx+1, err)
+			return fmt.Errorf("comment %d: %w", i+1, err)
 		}
-		created, err := api.AddPendingReviewCommentREST(client, repo, pr.Number, opts.ReviewID, normalized)
+		normalizedInputs[i] = normalized
+	}
+
+	review, err := api.GetPullRequestReviewREST(client, repo, pr.Number, opts.ReviewID)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(review.State, "PENDING") {
+		return fmt.Errorf("review %d is %s; add-comment requires a pending review", opts.ReviewID, strings.ToLower(review.State))
+	}
+
+	files, err := api.ListPullRequestFilesREST(client, repo, pr.Number)
+	if err != nil {
+		return err
+	}
+
+	fileLookup := make(map[string]api.PullRequestFileREST, len(files))
+	for _, file := range files {
+		fileLookup[file.Filename] = file
+	}
+
+	var reviewCommit *string
+	if review.CommitID != "" {
+		commit := review.CommitID
+		reviewCommit = &commit
+	}
+
+	diffCache := make(map[string]diffPositionIndex)
+	outputs := make([]prshared.ReviewCommentOutput, 0, len(normalizedInputs))
+
+	for idx, input := range normalizedInputs {
+		file, ok := fileLookup[input.Path]
+		if !ok {
+			return fmt.Errorf("comment %d: path %q is not part of the changes for PR #%d", idx+1, input.Path, pr.Number)
+		}
+
+		comment := resolvedComment{
+			path: input.Path,
+			body: input.Body,
+		}
+
+		if input.CommitID != nil {
+			if reviewCommit != nil && *input.CommitID != *reviewCommit {
+				return fmt.Errorf("comment %d: commit_id %q does not match pending review commit %q", idx+1, *input.CommitID, *reviewCommit)
+			}
+			commitCopy := *input.CommitID
+			comment.commitID = &commitCopy
+		} else {
+			comment.commitID = reviewCommit
+		}
+
+		if input.Position != nil {
+			comment.position = *input.Position
+		} else {
+			if file.Patch == nil || *file.Patch == "" {
+				return fmt.Errorf("comment %d: file %q has no diff available; provide `position` explicitly", idx+1, input.Path)
+			}
+
+			index, ok := diffCache[input.Path]
+			if !ok {
+				parsed, err := buildDiffPositionIndex(*file.Patch)
+				if err != nil {
+					return fmt.Errorf("comment %d: could not parse diff for %q: %w", idx+1, input.Path, err)
+				}
+				diffCache[input.Path] = parsed
+				index = parsed
+			}
+
+			line := *input.Line
+			side := *input.Side
+			var lookup map[int]int
+			if side == "RIGHT" {
+				lookup = index.right
+			} else {
+				lookup = index.left
+			}
+
+			position, ok := lookup[line]
+			if !ok {
+				return fmt.Errorf("comment %d: line %d on %s is not part of the diff; choose a changed line or provide `position`", idx+1, line, input.Path)
+			}
+			comment.position = position
+		}
+
+		created, err := api.AddPendingReviewCommentREST(client, repo, pr.Number, opts.ReviewID, comment.path, comment.position, comment.body, comment.commitID)
 		if err != nil {
+			var httpErr api.HTTPError
+			if errors.As(err, &httpErr) && (httpErr.StatusCode == 404 || httpErr.StatusCode == 422) {
+				return fmt.Errorf("comment %d: API %d error when posting %s at diff position %d; confirm the path and diff line are valid: %w", idx+1, httpErr.StatusCode, comment.path, comment.position, err)
+			}
 			return err
 		}
+
 		outputs = append(outputs, prshared.NewReviewCommentOutput(*created))
 	}
 
@@ -222,11 +332,11 @@ func addCommentRun(opts *addCommentOptions) error {
 	return writeJSON(opts.IO, outputs)
 }
 
-func collectPendingCommentInputs(opts *addCommentOptions) ([]api.PendingReviewCommentInput, error) {
-	var inputs []api.PendingReviewCommentInput
+func collectPendingCommentInputs(opts *addCommentOptions) ([]commentInput, error) {
+	var inputs []commentInput
 
 	for _, raw := range opts.CommentInputs {
-		var input api.PendingReviewCommentInput
+		var input commentInput
 		if err := json.Unmarshal([]byte(raw), &input); err != nil {
 			return nil, fmt.Errorf("invalid comment JSON: %w", err)
 		}
@@ -245,13 +355,13 @@ func collectPendingCommentInputs(opts *addCommentOptions) ([]api.PendingReviewCo
 		}
 
 		if strings.HasPrefix(payload, "[") {
-			var fileInputs []api.PendingReviewCommentInput
+			var fileInputs []commentInput
 			if err := json.Unmarshal([]byte(payload), &fileInputs); err != nil {
 				return nil, fmt.Errorf("invalid comments file: %w", err)
 			}
 			inputs = append(inputs, fileInputs...)
 		} else {
-			var single api.PendingReviewCommentInput
+			var single commentInput
 			if err := json.Unmarshal([]byte(payload), &single); err != nil {
 				return nil, fmt.Errorf("invalid comments file: %w", err)
 			}
@@ -262,50 +372,70 @@ func collectPendingCommentInputs(opts *addCommentOptions) ([]api.PendingReviewCo
 	return inputs, nil
 }
 
-func normalizePendingCommentInput(input api.PendingReviewCommentInput) (api.PendingReviewCommentInput, error) {
+func normalizePendingCommentInput(input commentInput) (commentInput, error) {
+	normalized := commentInput{}
+
 	pathTrimmed := strings.TrimSpace(input.Path)
 	if pathTrimmed == "" {
-		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("comment path is required")
+		return commentInput{}, cmdutil.FlagErrorf("comment path is required")
 	}
 	if pathTrimmed != input.Path {
-		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("comment path cannot include leading or trailing whitespace")
+		return commentInput{}, cmdutil.FlagErrorf("comment path cannot include leading or trailing whitespace")
 	}
+	normalized.Path = pathTrimmed
 
-	bodyTrimmed := strings.TrimSpace(input.Body)
-	if bodyTrimmed == "" {
-		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("comment body cannot be blank")
+	if strings.TrimSpace(input.Body) == "" {
+		return commentInput{}, cmdutil.FlagErrorf("comment body cannot be blank")
+	}
+	normalized.Body = input.Body
+
+	if input.StartLine != nil || input.StartSide != nil {
+		return commentInput{}, cmdutil.FlagErrorf("line ranges are not supported; provide `position` instead")
 	}
 
 	if input.Position == nil && input.Line == nil {
-		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("specify either `position` or `line` with `side`")
+		return commentInput{}, cmdutil.FlagErrorf("specify either `position` or `line` with `side`")
 	}
 	if input.Position != nil && input.Line != nil {
-		return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`position` cannot be combined with `line`")
+		return commentInput{}, cmdutil.FlagErrorf("`position` cannot be combined with `line`")
+	}
+
+	if input.Position != nil {
+		if *input.Position <= 0 {
+			return commentInput{}, cmdutil.FlagErrorf("`position` must be greater than 0")
+		}
+		pos := *input.Position
+		normalized.Position = &pos
 	}
 
 	if input.Line != nil {
+		if *input.Line <= 0 {
+			return commentInput{}, cmdutil.FlagErrorf("`line` must be greater than 0")
+		}
 		if input.Side == nil {
-			return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`side` is required when `line` is provided")
+			return commentInput{}, cmdutil.FlagErrorf("`side` is required when `line` is provided")
 		}
 		normalizedSide, err := normalizeReviewSide("side", input.Side)
 		if err != nil {
-			return api.PendingReviewCommentInput{}, err
+			return commentInput{}, err
 		}
-		input.Side = normalizedSide
-
-		if input.StartLine != nil {
-			if input.StartSide == nil {
-				return api.PendingReviewCommentInput{}, cmdutil.FlagErrorf("`start_side` is required when `start_line` is provided")
-			}
-			normalizedStartSide, err := normalizeReviewSide("start_side", input.StartSide)
-			if err != nil {
-				return api.PendingReviewCommentInput{}, err
-			}
-			input.StartSide = normalizedStartSide
-		}
+		line := *input.Line
+		normalized.Line = &line
+		normalized.Side = normalizedSide
+	} else if input.Side != nil {
+		return commentInput{}, cmdutil.FlagErrorf("`side` requires `line`")
 	}
 
-	return input, nil
+	if input.CommitID != nil {
+		trimmed := strings.TrimSpace(*input.CommitID)
+		if trimmed == "" {
+			return commentInput{}, cmdutil.FlagErrorf("`commit_id` cannot be blank")
+		}
+		commitID := trimmed
+		normalized.CommitID = &commitID
+	}
+
+	return normalized, nil
 }
 
 func normalizeReviewSide(label string, value *string) (*string, error) {
@@ -317,7 +447,103 @@ func normalizeReviewSide(label string, value *string) (*string, error) {
 		return nil, cmdutil.FlagErrorf("`%s` cannot include leading or trailing whitespace", label)
 	}
 	upper := strings.ToUpper(trimmed)
+	if upper != "LEFT" && upper != "RIGHT" {
+		return nil, cmdutil.FlagErrorf("`%s` must be LEFT or RIGHT", label)
+	}
 	return &upper, nil
+}
+
+type diffPositionIndex struct {
+	right map[int]int
+	left  map[int]int
+}
+
+func buildDiffPositionIndex(patch string) (diffPositionIndex, error) {
+	index := diffPositionIndex{
+		right: make(map[int]int),
+		left:  make(map[int]int),
+	}
+
+	lines := strings.Split(patch, "\n")
+	var leftLine, rightLine int
+	position := 0
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "@@") {
+			lStart, rStart, err := parseHunkHeader(line)
+			if err != nil {
+				return diffPositionIndex{}, err
+			}
+			leftLine = lStart - 1
+			rightLine = rStart - 1
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		if strings.HasPrefix(line, "\\") {
+			continue
+		}
+
+		position++
+		switch line[0] {
+		case '+':
+			rightLine++
+			index.right[rightLine] = position
+		case '-':
+			leftLine++
+			index.left[leftLine] = position
+		default:
+			leftLine++
+			rightLine++
+			index.left[leftLine] = position
+			index.right[rightLine] = position
+		}
+	}
+
+	return index, nil
+}
+
+func parseHunkHeader(header string) (int, int, error) {
+	trimmed := strings.TrimSpace(header)
+	if !strings.HasPrefix(trimmed, "@@") {
+		return 0, 0, fmt.Errorf("invalid hunk header %q", header)
+	}
+	trimmed = strings.TrimPrefix(trimmed, "@@")
+	trimmed = strings.TrimSuffix(trimmed, "@@")
+	trimmed = strings.TrimSpace(trimmed)
+
+	parts := strings.Split(trimmed, " ")
+	if len(parts) < 2 {
+		return 0, 0, fmt.Errorf("invalid hunk header %q", header)
+	}
+
+	leftStart, err := parseHunkRange(parts[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	rightStart, err := parseHunkRange(parts[1])
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return leftStart, rightStart, nil
+}
+
+func parseHunkRange(segment string) (int, error) {
+	if segment == "" {
+		return 0, fmt.Errorf("invalid hunk range")
+	}
+	if segment[0] == '-' || segment[0] == '+' {
+		segment = segment[1:]
+	}
+	if segment == "" {
+		return 0, fmt.Errorf("invalid hunk range")
+	}
+	if idx := strings.Index(segment, ","); idx != -1 {
+		segment = segment[:idx]
+	}
+	return strconv.Atoi(segment)
 }
 
 type submitOptions struct {

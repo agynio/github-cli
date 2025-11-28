@@ -81,11 +81,27 @@ func TestReviewAddComment(t *testing.T) {
 	factory, out := setupFactory(t, reg)
 
 	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "abc123",
+		}),
+	)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
+		httpmock.StatusJSONResponse(200, []map[string]interface{}{
+			{"filename": "src/app.go", "status": "modified", "patch": nil},
+		}),
+	)
+
+	reg.Register(
 		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/88/comments"),
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
-			require.Equal(t, "{\"body\":\"ping\",\"path\":\"src/app.go\",\"position\":3}", string(bytes.TrimSpace(body)))
+			require.JSONEq(t, `{"body":"ping","path":"src/app.go","position":3,"commit_id":"abc123"}`, string(bytes.TrimSpace(body)))
 
 			payload := map[string]interface{}{
 				"id":                     901,
@@ -119,6 +135,107 @@ func TestReviewAddComment(t *testing.T) {
 
 	expected := "[{\"id\":901,\"pull_request_review_id\":88,\"body\":\"ping\",\"author\":\"octocat\",\"path\":\"src/app.go\",\"created_at\":\"2024-10-01T12:00:00Z\",\"updated_at\":\"2024-10-01T12:00:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/7#discussion_r901\"}]\n"
 	require.Equal(t, expected, out.String())
+}
+
+func TestReviewAddCommentMapsLineToPosition(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, out := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "def456",
+		}),
+	)
+
+	patch := "@@ -1,3 +1,4 @@\n line1\n-line2\n+line2 updated\n+line3\n line4\n"
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
+		httpmock.StatusJSONResponse(200, []map[string]interface{}{
+			{"filename": "src/app.go", "status": "modified", "patch": patch},
+		}),
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/88/comments"),
+		func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"body":"mapped","path":"src/app.go","position":4,"commit_id":"def456"}`, string(bytes.TrimSpace(body)))
+
+			return httpmock.StatusJSONResponse(201, map[string]interface{}{
+				"id":                     902,
+				"pull_request_review_id": 88,
+				"body":                   "mapped",
+				"path":                   "src/app.go",
+				"line":                   3,
+				"side":                   "RIGHT",
+				"html_url":               "https://github.com/OWNER/REPO/pull/7#discussion_r902",
+				"created_at":             "2024-10-01T12:00:00Z",
+				"updated_at":             "2024-10-01T12:00:00Z",
+				"user": map[string]interface{}{
+					"login": "octocat",
+				},
+			})(req)
+		},
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":3,"side":"RIGHT","body":"mapped"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	require.NoError(t, cmd.Execute())
+
+	expected := "[{\"id\":902,\"pull_request_review_id\":88,\"body\":\"mapped\",\"author\":\"octocat\",\"path\":\"src/app.go\",\"line\":3,\"side\":\"RIGHT\",\"created_at\":\"2024-10-01T12:00:00Z\",\"updated_at\":\"2024-10-01T12:00:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/7#discussion_r902\"}]\n"
+	require.Equal(t, expected, out.String())
+}
+
+func TestReviewAddCommentLineOutsideDiff(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, _ := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "def456",
+		}),
+	)
+
+	patch := "@@ -1,2 +1,2 @@\n-lineA\n+lineB\n"
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
+		httpmock.StatusJSONResponse(200, []map[string]interface{}{
+			{"filename": "src/app.go", "status": "modified", "patch": patch},
+		}),
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":10,"side":"RIGHT","body":"mapped"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "line 10 on src/app.go is not part of the diff")
 }
 
 func TestReviewSubmit(t *testing.T) {
@@ -192,7 +309,7 @@ func TestReviewAbort(t *testing.T) {
 }
 
 func TestNormalizePendingCommentInputPreservesBodyWhitespace(t *testing.T) {
-	input := api.PendingReviewCommentInput{
+	input := commentInput{
 		Body:     " ping ",
 		Path:     "src/app.go",
 		Position: intPtr(3),
@@ -201,10 +318,12 @@ func TestNormalizePendingCommentInputPreservesBodyWhitespace(t *testing.T) {
 	result, err := normalizePendingCommentInput(input)
 	require.NoError(t, err)
 	require.Equal(t, " ping ", result.Body)
+	require.NotNil(t, result.Position)
+	require.Equal(t, 3, *result.Position)
 }
 
 func TestNormalizePendingCommentInputRejectsPathWhitespace(t *testing.T) {
-	input := api.PendingReviewCommentInput{
+	input := commentInput{
 		Body:     "ping",
 		Path:     " src/app.go ",
 		Position: intPtr(3),
@@ -217,7 +336,7 @@ func TestNormalizePendingCommentInputRejectsPathWhitespace(t *testing.T) {
 func TestNormalizePendingCommentInputRejectsSideWhitespace(t *testing.T) {
 	line := 5
 	side := " right"
-	input := api.PendingReviewCommentInput{
+	input := commentInput{
 		Body: "ping",
 		Path: "src/app.go",
 		Line: &line,
@@ -228,12 +347,12 @@ func TestNormalizePendingCommentInputRejectsSideWhitespace(t *testing.T) {
 	require.ErrorContains(t, err, "`side` cannot include leading or trailing whitespace")
 }
 
-func TestNormalizePendingCommentInputNormalizesSides(t *testing.T) {
+func TestNormalizePendingCommentInputRejectsRanges(t *testing.T) {
 	line := 10
 	startLine := 4
 	side := "right"
 	startSide := "left"
-	input := api.PendingReviewCommentInput{
+	input := commentInput{
 		Body:      "ping",
 		Path:      "src/app.go",
 		Line:      &line,
@@ -242,12 +361,8 @@ func TestNormalizePendingCommentInputNormalizesSides(t *testing.T) {
 		StartSide: &startSide,
 	}
 
-	result, err := normalizePendingCommentInput(input)
-	require.NoError(t, err)
-	require.NotNil(t, result.Side)
-	require.Equal(t, "RIGHT", *result.Side)
-	require.NotNil(t, result.StartSide)
-	require.Equal(t, "LEFT", *result.StartSide)
+	_, err := normalizePendingCommentInput(input)
+	require.ErrorContains(t, err, "line ranges are not supported")
 }
 
 func intPtr(v int) *int {
