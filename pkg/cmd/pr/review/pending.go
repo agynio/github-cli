@@ -143,7 +143,11 @@ type resolvedComment struct {
 	path     string
 	position int
 	body     string
-	commitID *string
+}
+
+type commitDiffCache struct {
+	patches map[string]*string
+	indices map[string]diffPositionIndex
 }
 
 func NewCmdReviewAddComment(f *cmdutil.Factory, runF func(*addCommentOptions) error) *cobra.Command {
@@ -162,7 +166,7 @@ func NewCmdReviewAddComment(f *cmdutil.Factory, runF func(*addCommentOptions) er
 		Each comment JSON must provide "path" and "body", plus either a diff
 		"position" integer or a combination of "line" and "side". When using
 		"line"/"side", the CLI maps the requested line to the correct diff position
-		for the pull request patch.
+		against the pending review's commit.
 		`),
 		Example: heredoc.Doc(`
 			# Add a single position-based comment
@@ -240,29 +244,31 @@ func addCommentRun(opts *addCommentOptions) error {
 		return fmt.Errorf("review %d is %s; add-comment requires a pending review", opts.ReviewID, strings.ToLower(review.State))
 	}
 
-	files, err := api.ListPullRequestFilesREST(client, repo, pr.Number)
-	if err != nil {
-		return err
+	reviewCommitID := strings.TrimSpace(review.CommitID)
+	if reviewCommitID == "" {
+		return fmt.Errorf("pending review %d has no associated commit; reopen the review with --commit-sha or provide --position for each comment", opts.ReviewID)
 	}
 
-	fileLookup := make(map[string]api.PullRequestFileREST, len(files))
-	for _, file := range files {
-		fileLookup[file.Filename] = file
-	}
-
-	var reviewCommit *string
-	if review.CommitID != "" {
-		commit := review.CommitID
-		reviewCommit = &commit
-	}
-
-	diffCache := make(map[string]diffPositionIndex)
+	commitCaches := make(map[string]*commitDiffCache)
 	outputs := make([]prshared.ReviewCommentOutput, 0, len(normalizedInputs))
 
 	for idx, input := range normalizedInputs {
-		file, ok := fileLookup[input.Path]
+		targetCommitID := reviewCommitID
+		if input.CommitID != nil {
+			if *input.CommitID != reviewCommitID {
+				return fmt.Errorf("comment %d: commit_id %q does not match pending review commit %q", idx+1, *input.CommitID, reviewCommitID)
+			}
+			targetCommitID = *input.CommitID
+		}
+
+		cacheEntry, err := ensureCommitCache(client, repo, targetCommitID, commitCaches)
+		if err != nil {
+			return fmt.Errorf("comment %d: unable to load commit %s: %w", idx+1, targetCommitID, err)
+		}
+
+		patchPtr, ok := cacheEntry.patches[input.Path]
 		if !ok {
-			return fmt.Errorf("comment %d: path %q is not part of the changes for PR #%d", idx+1, input.Path, pr.Number)
+			return fmt.Errorf("comment %d: path %q was not changed in commit %s", idx+1, input.Path, targetCommitID)
 		}
 
 		comment := resolvedComment{
@@ -270,30 +276,20 @@ func addCommentRun(opts *addCommentOptions) error {
 			body: input.Body,
 		}
 
-		if input.CommitID != nil {
-			if reviewCommit != nil && *input.CommitID != *reviewCommit {
-				return fmt.Errorf("comment %d: commit_id %q does not match pending review commit %q", idx+1, *input.CommitID, *reviewCommit)
-			}
-			commitCopy := *input.CommitID
-			comment.commitID = &commitCopy
-		} else {
-			comment.commitID = reviewCommit
-		}
-
 		if input.Position != nil {
 			comment.position = *input.Position
 		} else {
-			if file.Patch == nil || *file.Patch == "" {
-				return fmt.Errorf("comment %d: file %q has no diff available; provide --position explicitly", idx+1, input.Path)
+			if patchPtr == nil || *patchPtr == "" {
+				return fmt.Errorf("comment %d: file %q has no diff in commit %s; provide --position explicitly", idx+1, input.Path, targetCommitID)
 			}
 
-			index, ok := diffCache[input.Path]
+			index, ok := cacheEntry.indices[input.Path]
 			if !ok {
-				parsed, err := buildDiffPositionIndex(*file.Patch)
+				parsed, err := buildDiffPositionIndex(*patchPtr)
 				if err != nil {
-					return fmt.Errorf("comment %d: could not parse diff for %q: %w", idx+1, input.Path, err)
+					return fmt.Errorf("comment %d: could not parse diff for %q at commit %s: %w", idx+1, input.Path, targetCommitID, err)
 				}
-				diffCache[input.Path] = parsed
+				cacheEntry.indices[input.Path] = parsed
 				index = parsed
 			}
 
@@ -308,20 +304,16 @@ func addCommentRun(opts *addCommentOptions) error {
 
 			position, ok := lookup[line]
 			if !ok {
-				commitLabel := "<unknown>"
-				if comment.commitID != nil && *comment.commitID != "" {
-					commitLabel = *comment.commitID
-				}
-				return fmt.Errorf("comment %d: line %d on %s is outside the diff at commit %s; choose a changed line or provide --position", idx+1, line, input.Path, commitLabel)
+				return fmt.Errorf("comment %d: line %d on %s is not part of the %s side diff at commit %s; choose a changed line or provide --position", idx+1, line, input.Path, strings.ToLower(side), targetCommitID)
 			}
 			comment.position = position
 		}
 
-		created, err := api.AddPendingReviewCommentREST(client, repo, pr.Number, opts.ReviewID, comment.path, comment.position, comment.body, comment.commitID)
+		created, err := api.AddPendingReviewCommentREST(client, repo, pr.Number, opts.ReviewID, comment.path, comment.position, comment.body)
 		if err != nil {
 			var httpErr api.HTTPError
 			if errors.As(err, &httpErr) && (httpErr.StatusCode == 404 || httpErr.StatusCode == 422) {
-				return fmt.Errorf("comment %d: API %d error when posting %s at diff position %d; confirm the path and diff line are valid: %w", idx+1, httpErr.StatusCode, comment.path, comment.position, err)
+				return fmt.Errorf("comment %d: API %d error when posting %s at diff position %d for commit %s; confirm the path and diff line are valid: %w", idx+1, httpErr.StatusCode, comment.path, comment.position, targetCommitID, err)
 			}
 			return err
 		}
@@ -334,6 +326,29 @@ func addCommentRun(opts *addCommentOptions) error {
 	}
 
 	return writeJSON(opts.IO, outputs)
+}
+
+func ensureCommitCache(client *api.Client, repo ghrepo.Interface, commitID string, cache map[string]*commitDiffCache) (*commitDiffCache, error) {
+	if entry, ok := cache[commitID]; ok {
+		return entry, nil
+	}
+
+	commit, err := api.GetCommitREST(client, repo, commitID)
+	if err != nil {
+		return nil, err
+	}
+
+	entry := &commitDiffCache{
+		patches: make(map[string]*string, len(commit.Files)),
+		indices: make(map[string]diffPositionIndex),
+	}
+
+	for _, file := range commit.Files {
+		entry.patches[file.Filename] = file.Patch
+	}
+
+	cache[commitID] = entry
+	return entry, nil
 }
 
 func collectPendingCommentInputs(opts *addCommentOptions) ([]commentInput, error) {

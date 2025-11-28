@@ -90,9 +90,12 @@ func TestReviewAddComment(t *testing.T) {
 	)
 
 	reg.Register(
-		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
-		httpmock.StatusJSONResponse(200, []map[string]interface{}{
-			{"filename": "src/app.go", "status": "modified", "patch": nil},
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/abc123"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "abc123",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "modified", "patch": nil},
+			},
 		}),
 	)
 
@@ -101,7 +104,7 @@ func TestReviewAddComment(t *testing.T) {
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
-			require.JSONEq(t, `{"body":"ping","path":"src/app.go","position":3,"commit_id":"abc123"}`, string(bytes.TrimSpace(body)))
+			require.JSONEq(t, `{"body":"ping","path":"src/app.go","position":3}`, string(bytes.TrimSpace(body)))
 
 			payload := map[string]interface{}{
 				"id":                     901,
@@ -152,9 +155,12 @@ func TestReviewAddCommentMapsLineToPosition(t *testing.T) {
 
 	patch := "@@ -1,3 +1,4 @@\n line1\n-line2\n+line2 updated\n+line3\n line4\n"
 	reg.Register(
-		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
-		httpmock.StatusJSONResponse(200, []map[string]interface{}{
-			{"filename": "src/app.go", "status": "modified", "patch": patch},
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/def456"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "def456",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "modified", "patch": patch},
+			},
 		}),
 	)
 
@@ -163,7 +169,7 @@ func TestReviewAddCommentMapsLineToPosition(t *testing.T) {
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
-			require.JSONEq(t, `{"body":"mapped","path":"src/app.go","position":4,"commit_id":"def456"}`, string(bytes.TrimSpace(body)))
+			require.JSONEq(t, `{"body":"mapped","path":"src/app.go","position":4}`, string(bytes.TrimSpace(body)))
 
 			return httpmock.StatusJSONResponse(201, map[string]interface{}{
 				"id":                     902,
@@ -200,6 +206,113 @@ func TestReviewAddCommentMapsLineToPosition(t *testing.T) {
 	require.Equal(t, expected, out.String())
 }
 
+func TestReviewAddCommentMapsLeftDeletion(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, out := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "feedbeef",
+		}),
+	)
+
+	patch := "@@ -1,2 +1,1 @@\n-lineA\n lineB\n"
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/feedbeef"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "feedbeef",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "modified", "patch": patch},
+			},
+		}),
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/88/comments"),
+		func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"body":"removed","path":"src/app.go","position":1}`, string(bytes.TrimSpace(body)))
+
+			return httpmock.StatusJSONResponse(201, map[string]interface{}{
+				"id":                     903,
+				"pull_request_review_id": 88,
+				"body":                   "removed",
+				"path":                   "src/app.go",
+				"line":                   1,
+				"side":                   "LEFT",
+				"html_url":               "https://github.com/OWNER/REPO/pull/7#discussion_r903",
+				"created_at":             "2024-10-01T12:05:00Z",
+				"updated_at":             "2024-10-01T12:05:00Z",
+				"user": map[string]interface{}{
+					"login": "octocat",
+				},
+			})(req)
+		},
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":1,"side":"LEFT","body":"removed"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	require.NoError(t, cmd.Execute())
+
+	expected := "[{\"id\":903,\"pull_request_review_id\":88,\"body\":\"removed\",\"author\":\"octocat\",\"path\":\"src/app.go\",\"line\":1,\"side\":\"LEFT\",\"created_at\":\"2024-10-01T12:05:00Z\",\"updated_at\":\"2024-10-01T12:05:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/7#discussion_r903\"}]\n"
+	require.Equal(t, expected, out.String())
+}
+
+func TestReviewAddCommentRejectsLeftOnAddition(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, _ := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "c0ffee",
+		}),
+	)
+
+	patch := "@@ -0,0 +1,2 @@\n+added1\n+added2\n"
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/c0ffee"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "c0ffee",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "added", "patch": patch},
+			},
+		}),
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":1,"side":"LEFT","body":"whoops"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not part of the left side diff at commit c0ffee")
+}
+
 func TestReviewAddCommentLineOutsideDiff(t *testing.T) {
 	reg := &httpmock.Registry{}
 	factory, _ := setupFactory(t, reg)
@@ -215,9 +328,12 @@ func TestReviewAddCommentLineOutsideDiff(t *testing.T) {
 
 	patch := "@@ -1,2 +1,2 @@\n-lineA\n+lineB\n"
 	reg.Register(
-		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
-		httpmock.StatusJSONResponse(200, []map[string]interface{}{
-			{"filename": "src/app.go", "status": "modified", "patch": patch},
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/def456"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "def456",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "modified", "patch": patch},
+			},
 		}),
 	)
 
@@ -235,7 +351,7 @@ func TestReviewAddCommentLineOutsideDiff(t *testing.T) {
 
 	err = cmd.Execute()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "line 10 on src/app.go is outside the diff at commit def456")
+	require.Contains(t, err.Error(), "line 10 on src/app.go is not part of the right side diff at commit def456")
 }
 
 func TestReviewAddCommentRejectsUnknownPath(t *testing.T) {
@@ -252,9 +368,12 @@ func TestReviewAddCommentRejectsUnknownPath(t *testing.T) {
 	)
 
 	reg.Register(
-		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/files"),
-		httpmock.StatusJSONResponse(200, []map[string]interface{}{
-			{"filename": "src/app.go", "status": "modified", "patch": "@@ -1 +1 @@\n-line\n+line\n"},
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/abc123"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "abc123",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "modified", "patch": "@@ -1 +1 @@\n-line\n+line\n"},
+			},
 		}),
 	)
 
@@ -272,7 +391,7 @@ func TestReviewAddCommentRejectsUnknownPath(t *testing.T) {
 
 	err = cmd.Execute()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), `path "src/other.go" is not part of the changes for PR #7`)
+	require.Contains(t, err.Error(), `path "src/other.go" was not changed in commit abc123`)
 }
 
 func TestReviewSubmit(t *testing.T) {

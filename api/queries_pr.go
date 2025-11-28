@@ -934,6 +934,17 @@ type PullRequestFileREST struct {
 	Patch    *string `json:"patch"`
 }
 
+type CommitREST struct {
+	SHA   string           `json:"sha"`
+	Files []CommitFileREST `json:"files"`
+}
+
+type CommitFileREST struct {
+	Filename string  `json:"filename"`
+	Status   string  `json:"status"`
+	Patch    *string `json:"patch"`
+}
+
 type simpleUser struct {
 	Login  string `json:"login"`
 	ID     int64  `json:"id"`
@@ -954,17 +965,15 @@ func CreatePendingReviewREST(client *Client, repo ghrepo.Interface, prNumber int
 	return &review, nil
 }
 
-func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, path string, position int, body string, commitID *string) (*PullRequestReviewCommentREST, error) {
+func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64, path string, position int, body string) (*PullRequestReviewCommentREST, error) {
 	payload := struct {
-		Body     string  `json:"body"`
-		Path     string  `json:"path"`
-		Position int     `json:"position"`
-		CommitID *string `json:"commit_id,omitempty"`
+		Body     string `json:"body"`
+		Path     string `json:"path"`
+		Position int    `json:"position"`
 	}{
 		Body:     body,
 		Path:     path,
 		Position: position,
-		CommitID: commitID,
 	}
 
 	endpoint := fmt.Sprintf("%s/reviews/%d/comments", reviewBasePath(repo, prNumber), reviewID)
@@ -978,6 +987,20 @@ func AddPendingReviewCommentREST(client *Client, repo ghrepo.Interface, prNumber
 		return nil, err
 	}
 	return &comment, nil
+}
+
+func GetCommitREST(client *Client, repo ghrepo.Interface, sha string) (*CommitREST, error) {
+	path := fmt.Sprintf(
+		"repos/%s/%s/commits/%s",
+		url.PathEscape(repo.RepoOwner()),
+		url.PathEscape(repo.RepoName()),
+		url.PathEscape(sha),
+	)
+	var commit CommitREST
+	if err := client.REST(repo.RepoHost(), "GET", path, nil, &commit); err != nil {
+		return nil, err
+	}
+	return &commit, nil
 }
 
 func GetPullRequestReviewREST(client *Client, repo ghrepo.Interface, prNumber int, reviewID int64) (*PullRequestReviewREST, error) {

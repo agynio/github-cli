@@ -57,7 +57,7 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 		func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			require.NoError(t, err)
-			require.JSONEq(t, `{"body":"Looks good","path":"file.go","position":123,"commit_id":"abc123"}`, string(body))
+			require.JSONEq(t, `{"body":"Looks good","path":"file.go","position":123}`, string(body))
 
 			return httpmock.StatusJSONResponse(201, map[string]interface{}{
 				"id":                     555,
@@ -80,13 +80,39 @@ func TestAddPendingReviewCommentREST(t *testing.T) {
 
 	client := newTestClient(reg)
 	repo := ghrepo.New("OWNER", "REPO")
-	commitID := "abc123"
-	comment, err := AddPendingReviewCommentREST(client, repo, 7, 99, "file.go", 123, "Looks good", &commitID)
+	comment, err := AddPendingReviewCommentREST(client, repo, 7, 99, "file.go", 123, "Looks good")
 	require.NoError(t, err)
 	require.Equal(t, int64(555), comment.ID)
 	require.Equal(t, "file.go", comment.Path)
 	require.NotNil(t, comment.Line)
 	require.Equal(t, 123, *comment.Line)
+}
+
+func TestGetCommitREST(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/abc123"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "abc123",
+			"files": []map[string]interface{}{
+				{
+					"filename": "src/app.go",
+					"status":   "modified",
+					"patch":    "@@ -1 +1 @@\n-line\n+line\n",
+				},
+			},
+		}),
+	)
+
+	client := newTestClient(reg)
+	repo := ghrepo.New("OWNER", "REPO")
+	commit, err := GetCommitREST(client, repo, "abc123")
+	require.NoError(t, err)
+	require.Equal(t, "abc123", commit.SHA)
+	require.Len(t, commit.Files, 1)
+	require.Equal(t, "src/app.go", commit.Files[0].Filename)
 }
 
 func TestReplyToReviewCommentREST(t *testing.T) {
