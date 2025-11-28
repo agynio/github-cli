@@ -16,7 +16,6 @@ import (
 	cmdReopen "github.com/cli/cli/v2/pkg/cmd/pr/reopen"
 	cmdRevert "github.com/cli/cli/v2/pkg/cmd/pr/revert"
 	cmdReview "github.com/cli/cli/v2/pkg/cmd/pr/review"
-	cmdReviewComments "github.com/cli/cli/v2/pkg/cmd/pr/review-comments"
 	cmdStatus "github.com/cli/cli/v2/pkg/cmd/pr/status"
 	cmdUpdateBranch "github.com/cli/cli/v2/pkg/cmd/pr/update-branch"
 	cmdView "github.com/cli/cli/v2/pkg/cmd/pr/view"
@@ -59,7 +58,6 @@ func NewCmdPR(f *cmdutil.Factory) *cobra.Command {
 		cmdCheckout.NewCmdCheckout(f, nil),
 		cmdChecks.NewCmdChecks(f, nil),
 		cmdReview.NewCmdReview(f, nil),
-		cmdReviewComments.NewCmdReviewComments(f),
 		cmdMerge.NewCmdMerge(f, nil),
 		cmdUpdateBranch.NewCmdUpdateBranch(f, nil),
 		cmdReady.NewCmdReady(f, nil),
