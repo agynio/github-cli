@@ -877,8 +877,15 @@ func ComparePullRequestBaseBranchWith(client *Client, repo ghrepo.Interface, prN
 }
 
 type PendingReviewInput struct {
-	Body     string `json:"body,omitempty"`
-	CommitID string `json:"commit_id,omitempty"`
+	Body     string                      `json:"body,omitempty"`
+	CommitID string                      `json:"commit_id,omitempty"`
+	Comments []PendingReviewCommentInput `json:"comments,omitempty"`
+}
+
+type PendingReviewCommentInput struct {
+	Path     string `json:"path"`
+	Position int    `json:"position"`
+	Body     string `json:"body"`
 }
 
 type SubmitReviewInput struct {

@@ -48,6 +48,47 @@ func TestCreatePendingReviewREST(t *testing.T) {
 	require.Equal(t, "monalisa", review.User.Login)
 }
 
+func TestCreatePendingReviewRESTWithComments(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/1/reviews"),
+		func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"commit_id":"abc123","comments":[{"path":"file.go","position":7,"body":"nit"}]}`, string(body))
+
+			return httpmock.StatusJSONResponse(201, map[string]interface{}{
+				"id":        322,
+				"node_id":   "MDExOlB1bGxSZXF1ZXN0UmV2aWV3MzIy",
+				"body":      "",
+				"state":     "PENDING",
+				"commit_id": "abc123",
+				"html_url":  "https://example.com/reviews/322",
+				"url":       "https://api.github.com/reviews/322",
+				"user": map[string]interface{}{
+					"login":   "monalisa",
+					"id":      1,
+					"node_id": "MDQ6VXNlcjE=",
+				},
+			})(req)
+		},
+	)
+
+	client := newTestClient(reg)
+	repo := ghrepo.New("OWNER", "REPO")
+	input := PendingReviewInput{
+		CommitID: "abc123",
+		Comments: []PendingReviewCommentInput{{Path: "file.go", Position: 7, Body: "nit"}},
+	}
+
+	review, err := CreatePendingReviewREST(client, repo, 1, input)
+	require.NoError(t, err)
+	require.Equal(t, int64(322), review.ID)
+	require.Equal(t, "abc123", review.CommitID)
+}
+
 func TestAddPendingReviewCommentREST(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)

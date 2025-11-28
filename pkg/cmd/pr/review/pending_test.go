@@ -16,12 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupFactory(t *testing.T, reg *httpmock.Registry) (*cmdutil.Factory, *bytes.Buffer) {
+func setupFactory(t *testing.T, reg *httpmock.Registry) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	httpClient := &http.Client{}
 	httpmock.ReplaceTripper(httpClient, reg)
 
-	ios, _, out, _ := iostreams.Test()
+	ios, _, out, errOut := iostreams.Test()
 	ios.SetStdoutTTY(false)
 
 	factory := &cmdutil.Factory{
@@ -29,12 +29,12 @@ func setupFactory(t *testing.T, reg *httpmock.Registry) (*cmdutil.Factory, *byte
 		HttpClient: func() (*http.Client, error) { return httpClient, nil },
 	}
 
-	return factory, out
+	return factory, out, errOut
 }
 
 func TestReviewOpen(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, out := setupFactory(t, reg)
+	factory, out, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("POST", "repos/OWNER/REPO/pulls/5/reviews"),
@@ -78,7 +78,7 @@ func TestReviewOpen(t *testing.T) {
 
 func TestReviewAddComment(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, out := setupFactory(t, reg)
+	factory, out, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
@@ -142,7 +142,7 @@ func TestReviewAddComment(t *testing.T) {
 
 func TestReviewAddCommentMapsLineToPosition(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, out := setupFactory(t, reg)
+	factory, out, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
@@ -208,7 +208,7 @@ func TestReviewAddCommentMapsLineToPosition(t *testing.T) {
 
 func TestReviewAddCommentMapsLeftDeletion(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, out := setupFactory(t, reg)
+	factory, out, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
@@ -272,9 +272,167 @@ func TestReviewAddCommentMapsLeftDeletion(t *testing.T) {
 	require.Equal(t, expected, out.String())
 }
 
+func TestReviewAddCommentFallbackCreatesPendingReview(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, out, errOut := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "cafebabe",
+		}),
+	)
+
+	patch := "@@ -1,3 +1,4 @@\n line1\n-line2\n+line2 updated\n+line3\n line4\n"
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/cafebabe"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "cafebabe",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "modified", "patch": patch},
+			},
+		}),
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/88/comments"),
+		func(req *http.Request) (*http.Response, error) {
+			return httpmock.StatusJSONResponse(404, map[string]interface{}{
+				"message": "Not Found",
+			})(req)
+		},
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews"),
+		func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"commit_id":"cafebabe","comments":[{"path":"src/app.go","position":4,"body":"mapped"}]}`, string(bytes.TrimSpace(body)))
+
+			return httpmock.StatusJSONResponse(201, map[string]interface{}{
+				"id":        777,
+				"state":     "PENDING",
+				"commit_id": "cafebabe",
+			})(req)
+		},
+	)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/777/comments"),
+		func(req *http.Request) (*http.Response, error) {
+			require.Equal(t, "page=1&per_page=100", req.URL.RawQuery)
+			return httpmock.StatusJSONResponse(200, []map[string]interface{}{
+				{
+					"id":                     904,
+					"pull_request_review_id": 777,
+					"body":                   "mapped",
+					"path":                   "src/app.go",
+					"line":                   3,
+					"side":                   "RIGHT",
+					"html_url":               "https://github.com/OWNER/REPO/pull/7#discussion_r904",
+					"created_at":             "2024-10-01T12:10:00Z",
+					"updated_at":             "2024-10-01T12:10:00Z",
+					"user": map[string]interface{}{
+						"login": "octocat",
+					},
+				},
+			})(req)
+		},
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":3,"side":"RIGHT","body":"mapped"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	require.NoError(t, cmd.Execute())
+
+	expectedOut := "[{\"id\":904,\"pull_request_review_id\":777,\"body\":\"mapped\",\"author\":\"octocat\",\"path\":\"src/app.go\",\"line\":3,\"side\":\"RIGHT\",\"created_at\":\"2024-10-01T12:10:00Z\",\"updated_at\":\"2024-10-01T12:10:00Z\",\"url\":\"https://github.com/OWNER/REPO/pull/7#discussion_r904\"}]\n"
+	require.Equal(t, expectedOut, out.String())
+	require.Contains(t, errOut.String(), "Fallback used: created pending review 777 with 1 comment(s)")
+}
+
+func TestReviewAddCommentFallbackFailsOnExistingPendingReview(t *testing.T) {
+	reg := &httpmock.Registry{}
+	factory, _, _ := setupFactory(t, reg)
+
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"id":        88,
+			"state":     "PENDING",
+			"commit_id": "deadbeef",
+		}),
+	)
+
+	patch := "@@ -1,1 +1,1 @@\n-old\n+new\n"
+	reg.Register(
+		httpmock.REST("GET", "repos/OWNER/REPO/commits/deadbeef"),
+		httpmock.StatusJSONResponse(200, map[string]interface{}{
+			"sha": "deadbeef",
+			"files": []map[string]interface{}{
+				{"filename": "src/app.go", "status": "modified", "patch": patch},
+			},
+		}),
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews/88/comments"),
+		func(req *http.Request) (*http.Response, error) {
+			return httpmock.StatusJSONResponse(404, map[string]interface{}{
+				"message": "Not Found",
+			})(req)
+		},
+	)
+
+	reg.Register(
+		httpmock.REST("POST", "repos/OWNER/REPO/pulls/7/reviews"),
+		func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"commit_id":"deadbeef","comments":[{"path":"src/app.go","position":2,"body":"failing"}]}`, string(bytes.TrimSpace(body)))
+
+			return httpmock.StatusJSONResponse(422, map[string]interface{}{
+				"message": "Validation Failed",
+				"errors": []map[string]interface{}{
+					{"message": "user_id can only have one pending review per pull request"},
+				},
+			})(req)
+		},
+	)
+
+	pr := &api.PullRequest{Number: 7}
+	repo := ghrepo.New("OWNER", "REPO")
+	prshared.StubFinderForRunCommandStyleTests(t, "7", pr, repo)
+
+	cmd := NewCmdReviewAddComment(factory, nil)
+	argv, err := shlex.Split(`7 --review-id 88 --add-comment '{"path":"src/app.go","line":1,"side":"RIGHT","body":"failing"}'`)
+	require.NoError(t, err)
+	cmd.SetArgs(argv)
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "fallback failed: GitHub reports an existing pending review")
+	require.Contains(t, err.Error(), "Abort the other review or retry once opt-in fallback controls are available")
+	require.Contains(t, err.Error(), "user_id can only have one pending review per pull request")
+}
+
 func TestReviewAddCommentRejectsLeftOnAddition(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, _ := setupFactory(t, reg)
+	factory, _, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
@@ -315,7 +473,7 @@ func TestReviewAddCommentRejectsLeftOnAddition(t *testing.T) {
 
 func TestReviewAddCommentLineOutsideDiff(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, _ := setupFactory(t, reg)
+	factory, _, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
@@ -356,7 +514,7 @@ func TestReviewAddCommentLineOutsideDiff(t *testing.T) {
 
 func TestReviewAddCommentRejectsUnknownPath(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, _ := setupFactory(t, reg)
+	factory, _, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("GET", "repos/OWNER/REPO/pulls/7/reviews/88"),
@@ -396,7 +554,7 @@ func TestReviewAddCommentRejectsUnknownPath(t *testing.T) {
 
 func TestReviewSubmit(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, out := setupFactory(t, reg)
+	factory, out, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("POST", "repos/OWNER/REPO/pulls/9/reviews/400/events"),
@@ -439,7 +597,7 @@ func TestReviewSubmit(t *testing.T) {
 
 func TestReviewAbort(t *testing.T) {
 	reg := &httpmock.Registry{}
-	factory, out := setupFactory(t, reg)
+	factory, out, _ := setupFactory(t, reg)
 
 	reg.Register(
 		httpmock.REST("DELETE", "repos/OWNER/REPO/pulls/11/reviews/555"),

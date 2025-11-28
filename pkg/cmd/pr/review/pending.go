@@ -166,7 +166,12 @@ func NewCmdReviewAddComment(f *cmdutil.Factory, runF func(*addCommentOptions) er
 		Each comment JSON must provide "path" and "body", plus either a diff
 		"position" integer or a combination of "line" and "side". When using
 		"line"/"side", the CLI maps the requested line to the correct diff position
-		against the pending review's commit.
+		against the pending review's commit prior to sending the comment.
+
+		If GitHub returns a 404 for a mapped comment, the CLI automatically falls back
+		to creating a new pending review bound to the same commit and replays the
+		comment(s) there. GitHub enforces a single pending review per user—if that
+		fallback is blocked, abort or submit the other pending review before retrying.
 		`),
 		Example: heredoc.Doc(`
 			# Add a single position-based comment
@@ -250,7 +255,7 @@ func addCommentRun(opts *addCommentOptions) error {
 	}
 
 	commitCaches := make(map[string]*commitDiffCache)
-	outputs := make([]prshared.ReviewCommentOutput, 0, len(normalizedInputs))
+	resolved := make([]resolvedComment, len(normalizedInputs))
 
 	for idx, input := range normalizedInputs {
 		targetCommitID := reviewCommitID
@@ -309,16 +314,59 @@ func addCommentRun(opts *addCommentOptions) error {
 			comment.position = position
 		}
 
+		resolved[idx] = comment
+	}
+
+	outputs := make([]prshared.ReviewCommentOutput, 0, len(resolved))
+	var fallbackComments []resolvedComment
+
+	for idx, comment := range resolved {
 		created, err := api.AddPendingReviewCommentREST(client, repo, pr.Number, opts.ReviewID, comment.path, comment.position, comment.body)
 		if err != nil {
 			var httpErr api.HTTPError
-			if errors.As(err, &httpErr) && (httpErr.StatusCode == 404 || httpErr.StatusCode == 422) {
-				return fmt.Errorf("comment %d: API %d error when posting %s at diff position %d for commit %s; confirm the path and diff line are valid: %w", idx+1, httpErr.StatusCode, comment.path, comment.position, targetCommitID, err)
+			if errors.As(err, &httpErr) && httpErr.StatusCode == 404 {
+				fallbackComments = resolved[idx:]
+				break
+			}
+			if errors.As(err, &httpErr) && httpErr.StatusCode == 422 {
+				return fmt.Errorf("comment %d: API 422 error when posting %s at diff position %d for commit %s; confirm the review is still pending: %w", idx+1, comment.path, comment.position, reviewCommitID, err)
 			}
 			return err
 		}
 
 		outputs = append(outputs, prshared.NewReviewCommentOutput(*created))
+	}
+
+	if len(fallbackComments) > 0 {
+		fallbackPayload := make([]api.PendingReviewCommentInput, len(fallbackComments))
+		for i, comment := range fallbackComments {
+			fallbackPayload[i] = api.PendingReviewCommentInput{Path: comment.path, Position: comment.position, Body: comment.body}
+		}
+
+		reviewInput := api.PendingReviewInput{
+			CommitID: reviewCommitID,
+			Comments: fallbackPayload,
+		}
+
+		fallbackReview, err := api.CreatePendingReviewREST(client, repo, pr.Number, reviewInput)
+		if err != nil {
+			var httpErr api.HTTPError
+			if errors.As(err, &httpErr) && httpErr.StatusCode == 422 {
+				return fmt.Errorf("fallback failed: GitHub reports an existing pending review. Abort the other review or retry once opt-in fallback controls are available: %w", err)
+			}
+			return fmt.Errorf("fallback failed: %w", err)
+		}
+
+		comments, err := api.ListReviewCommentsREST(client, repo, pr.Number, fallbackReview.ID, api.ReviewCommentsListParams{PerPage: 100, Page: 1})
+		if err != nil {
+			return fmt.Errorf("fallback review created (id %d) but unable to list comments: %w", fallbackReview.ID, err)
+		}
+
+		fmt.Fprintf(opts.IO.ErrOut, "Fallback used: created pending review %d with %d comment(s)\n", fallbackReview.ID, len(comments))
+
+		for _, c := range comments {
+			outputs = append(outputs, prshared.NewReviewCommentOutput(c))
+		}
 	}
 
 	if opts.Exporter != nil {
