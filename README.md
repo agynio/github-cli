@@ -32,6 +32,8 @@ gh api review submit --org octo --repo demo --pr 42 --review-id REVIEW_ID --even
 gh api review create --org octo --repo demo --pr 42 --event APPROVE --body "LGTM"
 ```
 
+_Temporary note for review flow verification._
+
 ## Contributing
 
 If anything feels off or if you feel that some functionality is missing, please check out the [contributing page](.github/CONTRIBUTING.md). There you will find instructions for sharing your feedback, building the tool locally, and submitting pull requests to the project.
