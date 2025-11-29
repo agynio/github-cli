@@ -296,6 +296,11 @@ func NewCmdApi(f *cmdutil.Factory, runF func(*ApiOptions) error) *cobra.Command 
 	cmd.Flags().StringVarP(&opts.FilterOutput, "jq", "q", "", "Query to select values from the response using jq syntax")
 	cmd.Flags().DurationVar(&opts.CacheTTL, "cache", 0, "Cache the response, e.g. \"3600s\", \"60m\", \"1h\"")
 	cmd.Flags().BoolVar(&opts.Verbose, "verbose", false, "Include full HTTP request and response in the output")
+
+	cmd.AddCommand(newSeeCommentsCmd(f))
+	cmd.AddCommand(newReplyCommentCmd(f))
+	cmd.AddCommand(newReviewCmd(f))
+
 	return cmd
 }
 
