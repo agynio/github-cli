@@ -14,8 +14,10 @@ import (
 	cmdMerge "github.com/cli/cli/v2/pkg/cmd/pr/merge"
 	cmdReady "github.com/cli/cli/v2/pkg/cmd/pr/ready"
 	cmdReopen "github.com/cli/cli/v2/pkg/cmd/pr/reopen"
+	cmdReplyComment "github.com/cli/cli/v2/pkg/cmd/pr/reply-comment"
 	cmdRevert "github.com/cli/cli/v2/pkg/cmd/pr/revert"
 	cmdReview "github.com/cli/cli/v2/pkg/cmd/pr/review"
+	cmdSeeComments "github.com/cli/cli/v2/pkg/cmd/pr/see-comments"
 	cmdStatus "github.com/cli/cli/v2/pkg/cmd/pr/status"
 	cmdUpdateBranch "github.com/cli/cli/v2/pkg/cmd/pr/update-branch"
 	cmdView "github.com/cli/cli/v2/pkg/cmd/pr/view"
@@ -58,9 +60,11 @@ func NewCmdPR(f *cmdutil.Factory) *cobra.Command {
 		cmdCheckout.NewCmdCheckout(f, nil),
 		cmdChecks.NewCmdChecks(f, nil),
 		cmdReview.NewCmdReview(f, nil),
+		cmdSeeComments.NewCmdSeeComments(f),
 		cmdMerge.NewCmdMerge(f, nil),
 		cmdUpdateBranch.NewCmdUpdateBranch(f, nil),
 		cmdReady.NewCmdReady(f, nil),
+		cmdReplyComment.NewCmdReplyComment(f),
 		cmdComment.NewCmdComment(f, nil),
 		cmdClose.NewCmdClose(f, nil),
 		cmdReopen.NewCmdReopen(f, nil),
