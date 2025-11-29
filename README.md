@@ -12,7 +12,7 @@ For [installation options see below](#installation), for usage instructions [see
 
 ### Pull request review helpers
 
-Use `gh api` subcommands to script review workflows without hand-writing REST or GraphQL payloads.
+Use `gh pr` subcommands to script review workflows without hand-writing REST or GraphQL payloads.
 
 ```sh
 # list comments from the latest submitted review by the current user
@@ -28,8 +28,6 @@ gh pr review add    --org octo --repo demo --pr 42 --review-id REVIEW_ID \
   --path src/main.go --line 87 --side RIGHT --body "nit: rename for clarity"
 gh pr review submit --org octo --repo demo --pr 42 --review-id REVIEW_ID --event COMMENT
 
-# One-shot REST review creation with summary only
-gh api review create --org octo --repo demo --pr 42 --event APPROVE --body "LGTM"
 ```
 
 ## Contributing
