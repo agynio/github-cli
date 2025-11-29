@@ -76,7 +76,7 @@ func TestReviewOpen(t *testing.T) {
 
 	f, stdout, stderr := newPendingTestFactory(t, reg)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"open", "--org", "ORG", "--repo", "REPO", "--pr", "42"})
+	cmd.SetArgs([]string{"pending", "open", "--org", "ORG", "--repo", "REPO", "--pr", "42"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestReviewAdd(t *testing.T) {
 
 	f, stdout, stderr := newPendingTestFactory(t, reg)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"add", "--org", "ORG", "--repo", "REPO", "--pr", "9", "--review-id", "RV123", "--path", "file.go", "--line", "7", "--side", "right", "--body", "note"})
+	cmd.SetArgs([]string{"pending", "add", "--org", "ORG", "--repo", "REPO", "--pr", "9", "--review-id", "RV123", "--path", "file.go", "--line", "7", "--side", "right", "--body", "note"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
@@ -149,7 +149,7 @@ func TestReviewSubmit(t *testing.T) {
 
 	f, stdout, stderr := newPendingTestFactory(t, reg)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"submit", "--org", "ORG", "--repo", "REPO", "--pr", "5", "--review-id", "RV123", "--event", "approve"})
+	cmd.SetArgs([]string{"pending", "submit", "--org", "ORG", "--repo", "REPO", "--pr", "5", "--review-id", "RV123", "--event", "approve"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)

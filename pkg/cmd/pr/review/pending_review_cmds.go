@@ -9,6 +9,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func NewCmdReviewPending(f *cmdutil.Factory) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pending",
+		Short: "Manage pending pull request reviews",
+		Long:  "Open, update, and submit pending pull request reviews.",
+	}
+
+	cmd.AddCommand(NewCmdReviewOpen(f))
+	cmd.AddCommand(NewCmdReviewAdd(f))
+	cmd.AddCommand(NewCmdReviewSubmit(f))
+
+	return cmd
+}
+
 type reviewOpenOptions struct {
 	shared PendingReviewSharedOptions
 	Commit string

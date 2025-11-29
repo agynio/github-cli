@@ -23,10 +23,10 @@ gh pr reply-comment --org octo --repo demo --pr 42 \
   --comment-id 123456789 --body "Thanks for catching that!" --auto-submit-pending
 
 # GraphQL pending review flow (open → add inline thread → submit)
-gh pr review open   --org octo --repo demo --pr 42
-gh pr review add    --org octo --repo demo --pr 42 --review-id REVIEW_ID \
+gh pr review pending open   --org octo --repo demo --pr 42
+gh pr review pending add    --org octo --repo demo --pr 42 --review-id REVIEW_ID \
   --path src/main.go --line 87 --side RIGHT --body "nit: rename for clarity"
-gh pr review submit --org octo --repo demo --pr 42 --review-id REVIEW_ID --event COMMENT
+gh pr review pending submit --org octo --repo demo --pr 42 --review-id REVIEW_ID --event COMMENT
 
 ```
 
