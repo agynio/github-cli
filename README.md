@@ -10,6 +10,28 @@ GitHub CLI is supported for users on GitHub.com, GitHub Enterprise Cloud, and Gi
 
 For [installation options see below](#installation), for usage instructions [see the manual]( https://cli.github.com/manual/).
 
+### Pull request review helpers
+
+Use `gh pr` subcommands to script review workflows without hand-writing REST or GraphQL payloads.
+
+All helper commands accept the standard `gh pr` selectors (number, URL, or `owner/repo#number`) and honor `-R/--repo` even when run outside a git checkout.
+
+```sh
+# list comments from the latest submitted review by the current user
+gh pr see-comments 42 --latest -R octo/demo
+
+# reply to a specific review comment and auto-submit any pending review
+gh pr reply-comment 42 --comment-id 123456789 \
+  --body "Thanks for catching that!" --auto-submit-pending -R octo/demo
+
+# GraphQL pending review flow (open → add inline thread → submit)
+gh pr review pending open   42 -R octo/demo
+gh pr review pending add    42 --review-id REVIEW_ID \
+  --path src/main.go --line 87 --side RIGHT --body "nit: rename for clarity" -R octo/demo
+gh pr review pending submit 42 --review-id REVIEW_ID --event COMMENT -R octo/demo
+
+```
+
 ## Contributing
 
 If anything feels off or if you feel that some functionality is missing, please check out the [contributing page](.github/CONTRIBUTING.md). There you will find instructions for sharing your feedback, building the tool locally, and submitting pull requests to the project.
