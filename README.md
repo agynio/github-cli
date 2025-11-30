@@ -16,17 +16,17 @@ Use `gh pr` subcommands to script review workflows without hand-writing REST or 
 
 ```sh
 # list comments from the latest submitted review by the current user
-gh pr see-comments --org octo --repo demo --pr 42 --latest
+gh pr see-comments 42 --latest -R octo/demo
 
 # reply to a specific review comment and auto-submit any pending review
-gh pr reply-comment --org octo --repo demo --pr 42 \
-  --comment-id 123456789 --body "Thanks for catching that!" --auto-submit-pending
+gh pr reply-comment 42 --comment-id 123456789 \
+  --body "Thanks for catching that!" --auto-submit-pending -R octo/demo
 
 # GraphQL pending review flow (open → add inline thread → submit)
-gh pr review pending open   --org octo --repo demo --pr 42
-gh pr review pending add    --org octo --repo demo --pr 42 --review-id REVIEW_ID \
-  --path src/main.go --line 87 --side RIGHT --body "nit: rename for clarity"
-gh pr review pending submit --org octo --repo demo --pr 42 --review-id REVIEW_ID --event COMMENT
+gh pr review pending open   42 -R octo/demo
+gh pr review pending add    42 --review-id REVIEW_ID \
+  --path src/main.go --line 87 --side RIGHT --body "nit: rename for clarity" -R octo/demo
+gh pr review pending submit 42 --review-id REVIEW_ID --event COMMENT -R octo/demo
 
 ```
 
