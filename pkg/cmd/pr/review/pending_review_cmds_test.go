@@ -284,6 +284,39 @@ func TestReviewSubmit(t *testing.T) {
 	assert.JSONEq(t, `{"id":"RV123","state":"COMMENTED","submitted_at":"2024-05-01T12:00:00Z"}`, stdout.String())
 }
 
+func TestReviewSubmit_URLSelector(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.GraphQL(`mutation SubmitPullRequestReview`), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"data": map[string]interface{}{
+				"submitPullRequestReview": map[string]interface{}{
+					"pullRequestReview": map[string]interface{}{
+						"id":          "RV123",
+						"state":       "COMMENTED",
+						"submittedAt": "2024-05-01T12:00:00Z",
+					},
+				},
+			},
+		}),
+	)
+
+	selector := "https://github.com/octo/demo/pull/5"
+	repo := ghrepo.NewWithHost("octo", "demo", "github.com")
+	shared.StubFinderForRunCommandStyleTests(t, selector, &api.PullRequest{Number: 5}, repo)
+
+	f, stdout, stderr := newPendingTestFactory(t, reg, nil, nil)
+	cmd := NewCmdReview(f, nil)
+	cmd.SetArgs([]string{"pending", "submit", selector, "--review-id", "RV123", "--event", "approve"})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+	assert.JSONEq(t, `{"id":"RV123","state":"COMMENTED","submitted_at":"2024-05-01T12:00:00Z"}`, stdout.String())
+}
+
 func TestReviewOpen_RepoOverrideWithoutGit(t *testing.T) {
 	reg := &httpmock.Registry{}
 	defer reg.Verify(t)
