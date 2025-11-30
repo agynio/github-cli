@@ -10,7 +10,9 @@ import (
 
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
+	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/spf13/cobra"
@@ -22,31 +24,30 @@ type PendingReviewSharedOptions struct {
 	IO         *iostreams.IOStreams
 	HttpClient func() (*http.Client, error)
 	Config     func() (gh.Config, error)
-	Org        string
-	Repo       string
+	BaseRepo   func() (ghrepo.Interface, error)
+	Repo       ghrepo.Interface
+	Selector   string
 	Pull       int
 	Hostname   string
 }
 
 // RegisterFlags adds the standard repository-related flags to the provided command.
 func (o *PendingReviewSharedOptions) RegisterFlags(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&o.Org, "org", "", "Organization that owns the repository")
-	cmd.Flags().StringVar(&o.Repo, "repo", "", "Repository name")
 	cmd.Flags().IntVar(&o.Pull, "pr", 0, "Pull request number")
 	cmd.Flags().StringVar(&o.Hostname, "hostname", "", "GitHub hostname (default to authenticated host)")
 }
 
-// ValidateRepoArgs ensures repository flags are populated with valid values.
-func (o *PendingReviewSharedOptions) ValidateRepoArgs() error {
-	if strings.TrimSpace(o.Org) == "" {
-		return cmdutil.FlagErrorf("--org is required")
+// ResolvePullRequest resolves the repository and pull request number for a command invocation.
+func (o *PendingReviewSharedOptions) ResolvePullRequest() error {
+	repo, number, err := shared.ResolvePullRequest(o.BaseRepo, o.Selector, o.Pull)
+	if err != nil {
+		return err
 	}
-	if strings.TrimSpace(o.Repo) == "" {
-		return cmdutil.FlagErrorf("--repo is required")
+	if number <= 0 {
+		return cmdutil.FlagErrorf("must specify a pull request via --pr or as an argument")
 	}
-	if o.Pull <= 0 {
-		return cmdutil.FlagErrorf("invalid value for --pr: %d", o.Pull)
-	}
+	o.Repo = repo
+	o.Pull = number
 	return nil
 }
 
@@ -57,7 +58,13 @@ func (o *PendingReviewSharedOptions) BuildService() (*reviewapi.Service, error) 
 		return nil, err
 	}
 
-	host, _ := cfg.Authentication().DefaultHost()
+	host := ""
+	if o.Repo != nil {
+		host = o.Repo.RepoHost()
+	}
+	if host == "" {
+		host, _ = cfg.Authentication().DefaultHost()
+	}
 	if o.Hostname != "" {
 		host = o.Hostname
 	}

@@ -3,12 +3,14 @@ package review
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
 
 	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -16,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newPendingTestFactory(t *testing.T, rt http.RoundTripper) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
+func newPendingTestFactory(t *testing.T, rt http.RoundTripper, repo ghrepo.Interface, repoErr error) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	ios, _, stdout, stderr := iostreams.Test()
 	ios.SetStdoutTTY(false)
@@ -26,7 +28,7 @@ func newPendingTestFactory(t *testing.T, rt http.RoundTripper) (*cmdutil.Factory
 	cfg := config.NewBlankConfig()
 	cfg.Authentication().SetDefaultHost("github.com", "default")
 
-	return &cmdutil.Factory{
+	factory := &cmdutil.Factory{
 		IOStreams: ios,
 		HttpClient: func() (*http.Client, error) {
 			return &http.Client{Transport: rt}, nil
@@ -34,7 +36,19 @@ func newPendingTestFactory(t *testing.T, rt http.RoundTripper) (*cmdutil.Factory
 		Config: func() (gh.Config, error) {
 			return cfg, nil
 		},
-	}, stdout, stderr
+	}
+
+	factory.BaseRepo = func() (ghrepo.Interface, error) {
+		if repoErr != nil {
+			return nil, repoErr
+		}
+		if repo != nil {
+			return repo, nil
+		}
+		return ghrepo.FromFullName("ORG/REPO")
+	}
+
+	return factory, stdout, stderr
 }
 
 func TestReviewOpen(t *testing.T) {
@@ -74,11 +88,13 @@ func TestReviewOpen(t *testing.T) {
 		}),
 	)
 
-	f, stdout, stderr := newPendingTestFactory(t, reg)
+	repo, err := ghrepo.FromFullName("ORG/REPO")
+	require.NoError(t, err)
+	f, stdout, stderr := newPendingTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"pending", "open", "--org", "ORG", "--repo", "REPO", "--pr", "42"})
+	cmd.SetArgs([]string{"pending", "open", "42"})
 
-	_, err := cmd.ExecuteC()
+	_, err = cmd.ExecuteC()
 	require.NoError(t, err)
 	assert.Equal(t, "", stderr.String())
 	assert.JSONEq(t, `{"id":"RV_review","state":"PENDING","submitted_at":null}`, stdout.String())
@@ -118,11 +134,13 @@ func TestReviewAdd(t *testing.T) {
 		},
 	)
 
-	f, stdout, stderr := newPendingTestFactory(t, reg)
+	repo, err := ghrepo.FromFullName("ORG/REPO")
+	require.NoError(t, err)
+	f, stdout, stderr := newPendingTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"pending", "add", "--org", "ORG", "--repo", "REPO", "--pr", "9", "--review-id", "RV123", "--path", "file.go", "--line", "7", "--side", "right", "--body", "note"})
+	cmd.SetArgs([]string{"pending", "add", "9", "--review-id", "RV123", "--path", "file.go", "--line", "7", "--side", "right", "--body", "note"})
 
-	_, err := cmd.ExecuteC()
+	_, err = cmd.ExecuteC()
 	require.NoError(t, err)
 	assert.Equal(t, "", stderr.String())
 	assert.JSONEq(t, `{"id":"THREAD123","path":"file.go","is_outdated":false}`, stdout.String())
@@ -147,12 +165,64 @@ func TestReviewSubmit(t *testing.T) {
 		}),
 	)
 
-	f, stdout, stderr := newPendingTestFactory(t, reg)
+	repo, err := ghrepo.FromFullName("ORG/REPO")
+	require.NoError(t, err)
+	f, stdout, stderr := newPendingTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"pending", "submit", "--org", "ORG", "--repo", "REPO", "--pr", "5", "--review-id", "RV123", "--event", "approve"})
+	cmd.SetArgs([]string{"pending", "submit", "5", "--review-id", "RV123", "--event", "approve"})
+
+	_, err = cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+	assert.JSONEq(t, `{"id":"RV123","state":"COMMENTED","submitted_at":"2024-05-01T12:00:00Z"}`, stdout.String())
+}
+
+func TestReviewOpen_RepoOverrideWithoutGit(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.GraphQL(`query PullRequestID`), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"data": map[string]interface{}{
+				"repository": map[string]interface{}{
+					"pullRequest": map[string]interface{}{"id": "PRID"},
+				},
+			},
+		}),
+	)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.REST("GET", "repos/octo/demo/pulls/42"), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"head": map[string]interface{}{"sha": "abc123"},
+		}),
+	)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.GraphQL(`mutation AddPullRequestReview`), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"data": map[string]interface{}{
+				"addPullRequestReview": map[string]interface{}{
+					"pullRequestReview": map[string]interface{}{
+						"id":          "RV_review",
+						"state":       "PENDING",
+						"submittedAt": nil,
+					},
+				},
+			},
+		}),
+	)
+
+	noRepoErr := errors.New("no repository context")
+	f, stdout, stderr := newPendingTestFactory(t, reg, nil, noRepoErr)
+	f.BaseRepo = cmdutil.OverrideBaseRepoFunc(f, "octo/demo")
+
+	cmd := NewCmdReview(f, nil)
+	cmd.SetArgs([]string{"pending", "open", "42"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
 	assert.Equal(t, "", stderr.String())
-	assert.JSONEq(t, `{"id":"RV123","state":"COMMENTED","submitted_at":"2024-05-01T12:00:00Z"}`, stdout.String())
+	assert.JSONEq(t, `{"id":"RV_review","state":"PENDING","submitted_at":null}`, stdout.String())
 }

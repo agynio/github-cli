@@ -10,7 +10,9 @@ import (
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
+	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/spf13/cobra"
@@ -23,8 +25,10 @@ type ReplyCommentOptions struct {
 	HttpClient func() (*http.Client, error)
 	Config     func() (gh.Config, error)
 
-	Org               string
-	Repo              string
+	BaseRepo func() (ghrepo.Interface, error)
+
+	Repo              ghrepo.Interface
+	Selector          string
 	Pull              int
 	CommentID         int64
 	Body              string
@@ -37,17 +41,26 @@ func NewCmdReplyComment(f *cmdutil.Factory) *cobra.Command {
 		IO:         f.IOStreams,
 		HttpClient: f.HttpClient,
 		Config:     f.Config,
+		BaseRepo: func() (ghrepo.Interface, error) {
+			return f.BaseRepo()
+		},
 	}
 
 	cmd := &cobra.Command{
-		Use:   "reply-comment",
+		Use:   "reply-comment [<number> | <url> | <owner>/<repo>#<number>]",
 		Short: "Reply to a pull request review comment",
 		Long: heredoc.Doc(`
             Reply to an existing pull request review comment by comment identifier.
         `),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				opts.Selector = args[0]
+			}
 			if opts.Pull <= 0 {
-				return cmdutil.FlagErrorf("invalid value for --pr: %d", opts.Pull)
+				if opts.Selector == "" {
+					return cmdutil.FlagErrorf("must specify a pull request via --pr or as an argument")
+				}
 			}
 			if opts.CommentID <= 0 {
 				return cmdutil.FlagErrorf("invalid value for --comment-id: %d", opts.CommentID)
@@ -60,17 +73,11 @@ func NewCmdReplyComment(f *cmdutil.Factory) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Org, "org", "", "Organization that owns the repository")
-	cmd.Flags().StringVar(&opts.Repo, "repo", "", "Repository name")
 	cmd.Flags().IntVar(&opts.Pull, "pr", 0, "Pull request number")
 	cmd.Flags().Int64Var(&opts.CommentID, "comment-id", 0, "Review comment identifier to reply to")
 	cmd.Flags().StringVar(&opts.Body, "body", "", "Reply text")
 	cmd.Flags().BoolVar(&opts.AutoSubmitPending, "auto-submit-pending", false, "Submit pending reviews before replying")
 	cmd.Flags().StringVar(&opts.Hostname, "hostname", "", "GitHub hostname (default to authenticated host)")
-
-	_ = cmd.MarkFlagRequired("org")
-	_ = cmd.MarkFlagRequired("repo")
-	_ = cmd.MarkFlagRequired("pr")
 	_ = cmd.MarkFlagRequired("comment-id")
 	_ = cmd.MarkFlagRequired("body")
 
@@ -78,12 +85,22 @@ func NewCmdReplyComment(f *cmdutil.Factory) *cobra.Command {
 }
 
 func runReplyComment(ctx context.Context, opts *ReplyCommentOptions) error {
+	repo, number, err := shared.ResolvePullRequest(opts.BaseRepo, opts.Selector, opts.Pull)
+	if err != nil {
+		return err
+	}
+	opts.Repo = repo
+	opts.Pull = number
+
 	cfg, err := opts.Config()
 	if err != nil {
 		return err
 	}
 
-	host, _ := cfg.Authentication().DefaultHost()
+	host := repo.RepoHost()
+	if host == "" {
+		host, _ = cfg.Authentication().DefaultHost()
+	}
 	if opts.Hostname != "" {
 		host = opts.Hostname
 	}
@@ -94,34 +111,36 @@ func runReplyComment(ctx context.Context, opts *ReplyCommentOptions) error {
 	}
 
 	service := reviewapi.NewService(httpClient, host)
+	owner := repo.RepoOwner()
+	name := repo.RepoName()
 
-	reply, err := service.ReplyToComment(ctx, opts.Org, opts.Repo, opts.Pull, opts.CommentID, opts.Body)
+	reply, err := service.ReplyToComment(ctx, owner, name, opts.Pull, opts.CommentID, opts.Body)
 	if err != nil {
 		var pendingErr *reviewapi.PendingReviewError
 		if errors.As(err, &pendingErr) {
 			if !opts.AutoSubmitPending {
-				return fmt.Errorf("pending review detected for %s/%s#%d. Submit the review or re-run with --auto-submit-pending, or use the GraphQL review thread mutation.", opts.Org, opts.Repo, opts.Pull)
+				return fmt.Errorf("pending review detected for %s/%s#%d. Submit the review or re-run with --auto-submit-pending, or use the GraphQL review thread mutation.", owner, name, opts.Pull)
 			}
 
 			reviewer, loginErr := service.CurrentLogin(ctx)
 			if loginErr != nil {
-				return formatReplyError(loginErr, opts, "failed to resolve authenticated user")
+				return formatReplyError(loginErr, "failed to resolve authenticated user")
 			}
 
-			submitted, submitErr := service.SubmitPendingReviews(ctx, opts.Org, opts.Repo, opts.Pull, reviewer, autoSubmitSummary)
+			submitted, submitErr := service.SubmitPendingReviews(ctx, owner, name, opts.Pull, reviewer, autoSubmitSummary)
 			if submitErr != nil {
-				return formatReplyError(submitErr, opts, "failed to submit pending review")
+				return formatReplyError(submitErr, "failed to submit pending review")
 			}
 			if submitted == 0 {
 				return fmt.Errorf("no pending reviews owned by %s found on pull request #%d", reviewer, opts.Pull)
 			}
 
-			reply, err = service.ReplyToComment(ctx, opts.Org, opts.Repo, opts.Pull, opts.CommentID, opts.Body)
+			reply, err = service.ReplyToComment(ctx, owner, name, opts.Pull, opts.CommentID, opts.Body)
 			if err != nil {
-				return formatReplyError(err, opts, "failed to post reply after submitting pending review")
+				return formatReplyError(err, "failed to post reply after submitting pending review")
 			}
 		} else {
-			return formatReplyError(err, opts, "failed to post reply")
+			return formatReplyError(err, "failed to post reply")
 		}
 	}
 
@@ -134,7 +153,7 @@ func runReplyComment(ctx context.Context, opts *ReplyCommentOptions) error {
 	return nil
 }
 
-func formatReplyError(err error, opts *ReplyCommentOptions, prefix string) error {
+func formatReplyError(err error, prefix string) error {
 	switch e := err.(type) {
 	case *reviewapi.PullRequestNotFoundError:
 		return fmt.Errorf("%s: %w", prefix, e)
