@@ -32,7 +32,7 @@ gh pr review pending submit 42 --review-id REVIEW_ID --event COMMENT -R octo/dem
 
 ### Nix support
 
-This fork ships a Nix flake for reproducible builds and development. The current packaged version is `v0.1.1-pr-review`.
+This fork ships a Nix flake for reproducible builds and development. The current packaged version is `v0.1.2-pr-review`.
 
 ```sh
 # Build the gh binary for your host
