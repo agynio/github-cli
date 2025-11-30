@@ -156,3 +156,27 @@ func TestReplyComment_RepoOverrideWithoutGit(t *testing.T) {
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &payload))
 	assert.Equal(t, float64(99), payload["id"])
 }
+
+func TestReplyComment_FullReferenceWithoutGit(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.REST("POST", "repos/octo/demo/pulls/10/comments/50/replies"), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{"id": 101}),
+	)
+
+	noRepoErr := errors.New("no repository")
+	f, stdout, stderr := newTestFactory(t, reg, nil, noRepoErr)
+
+	cmd := NewCmdReplyComment(f)
+	cmd.SetArgs([]string{"octo/demo#10", "--comment-id", "50", "--body", "ack"})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &payload))
+	assert.Equal(t, float64(101), payload["id"])
+}

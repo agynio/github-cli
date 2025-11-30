@@ -27,12 +27,11 @@ func ResolvePullRequest(baseRepo func() (ghrepo.Interface, error), selector stri
 				return nil, 0, cmdutil.FlagErrorf("pull request argument %q does not match --pr=%d", selector, prFlag)
 			}
 
-			base, err := baseRepo()
-			if err != nil {
-				return nil, 0, err
+			if baseRepo != nil {
+				if base, err := baseRepo(); err == nil {
+					repo = ghrepo.NewWithHost(repo.RepoOwner(), repo.RepoName(), base.RepoHost())
+				}
 			}
-
-			repo = ghrepo.NewWithHost(repo.RepoOwner(), repo.RepoName(), base.RepoHost())
 			return repo, number, nil
 		}
 
