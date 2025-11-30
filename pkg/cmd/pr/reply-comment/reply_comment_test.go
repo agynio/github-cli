@@ -3,6 +3,7 @@ package reply_comment
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestFactory(t *testing.T, rt http.RoundTripper) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
+func newTestFactory(t *testing.T, rt http.RoundTripper, repo ghrepo.Interface, repoErr error) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	ios, _, stdout, stderr := iostreams.Test()
 	ios.SetStdoutTTY(false)
@@ -30,18 +31,27 @@ func newTestFactory(t *testing.T, rt http.RoundTripper) (*cmdutil.Factory, *byte
 	cfg := config.NewBlankConfig()
 	cfg.Authentication().SetDefaultHost("github.com", "default")
 
-	return &cmdutil.Factory{
+	factory := &cmdutil.Factory{
 		IOStreams: ios,
 		HttpClient: func() (*http.Client, error) {
 			return &http.Client{Transport: rt}, nil
 		},
-		BaseRepo: func() (ghrepo.Interface, error) {
-			return ghrepo.NewWithHost("ORG", "REPO", "github.com"), nil
-		},
 		Config: func() (gh.Config, error) {
 			return cfg, nil
 		},
-	}, stdout, stderr
+	}
+
+	factory.BaseRepo = func() (ghrepo.Interface, error) {
+		if repoErr != nil {
+			return nil, repoErr
+		}
+		if repo != nil {
+			return repo, nil
+		}
+		return ghrepo.FromFullName("ORG/REPO")
+	}
+
+	return factory, stdout, stderr
 }
 
 func TestReplyComment_AutoSubmitPending(t *testing.T) {
@@ -102,11 +112,13 @@ func TestReplyComment_AutoSubmitPending(t *testing.T) {
 		httpmock.JSONResponse(reply),
 	)
 
-	f, stdout, stderr := newTestFactory(t, reg)
+	repo, err := ghrepo.FromFullName("ORG/REPO")
+	require.NoError(t, err)
+	f, stdout, stderr := newTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReplyComment(f)
-	cmd.SetArgs([]string{"--pr", "123", "--comment-id", "456", "--body", "Thanks!", "--auto-submit-pending"})
+	cmd.SetArgs([]string{"123", "--comment-id", "456", "--body", "Thanks!", "--auto-submit-pending"})
 
-	_, err := cmd.ExecuteC()
+	_, err = cmd.ExecuteC()
 	require.NoError(t, err)
 	assert.Equal(t, "", stderr.String())
 	assert.JSONEq(t, `{"id":333,"in_reply_to_id":456,"body":"Thanks!","user":{"login":"octocat"},"created_at":"2024-05-06T07:08:09Z"}`, stdout.String())
@@ -118,4 +130,53 @@ func TestReplyComment_AutoSubmitPending(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, reqCount, "expected two requests to reply endpoint")
+}
+
+func TestReplyComment_RepoOverrideWithoutGit(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.REST("POST", "repos/octo/demo/pulls/10/comments/50/replies"), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{"id": 99}),
+	)
+
+	noRepoErr := errors.New("no repository")
+	f, stdout, stderr := newTestFactory(t, reg, nil, noRepoErr)
+	f.BaseRepo = cmdutil.OverrideBaseRepoFunc(f, "octo/demo")
+
+	cmd := NewCmdReplyComment(f)
+	cmd.SetArgs([]string{"10", "--comment-id", "50", "--body", "Thanks"})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &payload))
+	assert.Equal(t, float64(99), payload["id"])
+}
+
+func TestReplyComment_FullReferenceWithoutGit(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.REST("POST", "repos/octo/demo/pulls/10/comments/50/replies"), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{"id": 101}),
+	)
+
+	noRepoErr := errors.New("no repository")
+	f, stdout, stderr := newTestFactory(t, reg, nil, noRepoErr)
+
+	cmd := NewCmdReplyComment(f)
+	cmd.SetArgs([]string{"octo/demo#10", "--comment-id", "50", "--body", "ack"})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &payload))
+	assert.Equal(t, float64(101), payload["id"])
 }

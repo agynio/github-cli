@@ -9,8 +9,10 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
+	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/spf13/cobra"
@@ -21,32 +23,44 @@ const autoSubmitSummary = "Auto-submitting pending review to unblock threaded re
 type ReplyCommentOptions struct {
 	IO         *iostreams.IOStreams
 	HttpClient func() (*http.Client, error)
-	BaseRepo   func() (ghrepo.Interface, error)
+	Config     func() (gh.Config, error)
 
+	BaseRepo func() (ghrepo.Interface, error)
+
+	Repo              ghrepo.Interface
+	Selector          string
 	Pull              int
 	CommentID         int64
 	Body              string
 	AutoSubmitPending bool
-
-	repo ghrepo.Interface
+	Hostname          string
 }
 
 func NewCmdReplyComment(f *cmdutil.Factory) *cobra.Command {
 	opts := &ReplyCommentOptions{
 		IO:         f.IOStreams,
 		HttpClient: f.HttpClient,
-		BaseRepo:   f.BaseRepo,
+		Config:     f.Config,
+		BaseRepo: func() (ghrepo.Interface, error) {
+			return f.BaseRepo()
+		},
 	}
 
 	cmd := &cobra.Command{
-		Use:   "reply-comment",
+		Use:   "reply-comment [<number> | <url> | <owner>/<repo>#<number>]",
 		Short: "Reply to a pull request review comment",
 		Long: heredoc.Doc(`
-			Reply to an existing pull request review comment by comment identifier.
-		`),
+            Reply to an existing pull request review comment by comment identifier.
+        `),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				opts.Selector = args[0]
+			}
 			if opts.Pull <= 0 {
-				return cmdutil.FlagErrorf("invalid value for --pr: %d", opts.Pull)
+				if opts.Selector == "" {
+					return cmdutil.FlagErrorf("must specify a pull request via --pr or as an argument")
+				}
 			}
 			if opts.CommentID <= 0 {
 				return cmdutil.FlagErrorf("invalid value for --comment-id: %d", opts.CommentID)
@@ -63,8 +77,7 @@ func NewCmdReplyComment(f *cmdutil.Factory) *cobra.Command {
 	cmd.Flags().Int64Var(&opts.CommentID, "comment-id", 0, "Review comment identifier to reply to")
 	cmd.Flags().StringVar(&opts.Body, "body", "", "Reply text")
 	cmd.Flags().BoolVar(&opts.AutoSubmitPending, "auto-submit-pending", false, "Submit pending reviews before replying")
-
-	_ = cmd.MarkFlagRequired("pr")
+	cmd.Flags().StringVar(&opts.Hostname, "hostname", "", "GitHub hostname (default to authenticated host)")
 	_ = cmd.MarkFlagRequired("comment-id")
 	_ = cmd.MarkFlagRequired("body")
 
@@ -72,9 +85,24 @@ func NewCmdReplyComment(f *cmdutil.Factory) *cobra.Command {
 }
 
 func runReplyComment(ctx context.Context, opts *ReplyCommentOptions) error {
-	repo, err := opts.resolveRepo()
+	repo, number, err := shared.ResolvePullRequest(opts.BaseRepo, opts.Selector, opts.Pull)
 	if err != nil {
 		return err
+	}
+	opts.Repo = repo
+	opts.Pull = number
+
+	cfg, err := opts.Config()
+	if err != nil {
+		return err
+	}
+
+	host := repo.RepoHost()
+	if host == "" {
+		host, _ = cfg.Authentication().DefaultHost()
+	}
+	if opts.Hostname != "" {
+		host = opts.Hostname
 	}
 
 	httpClient, err := opts.HttpClient()
@@ -82,27 +110,26 @@ func runReplyComment(ctx context.Context, opts *ReplyCommentOptions) error {
 		return err
 	}
 
-	service := reviewapi.NewService(httpClient, repo.RepoHost())
+	service := reviewapi.NewService(httpClient, host)
 	owner := repo.RepoOwner()
 	name := repo.RepoName()
-	fullName := ghrepo.FullName(repo)
 
 	reply, err := service.ReplyToComment(ctx, owner, name, opts.Pull, opts.CommentID, opts.Body)
 	if err != nil {
 		var pendingErr *reviewapi.PendingReviewError
 		if errors.As(err, &pendingErr) {
 			if !opts.AutoSubmitPending {
-				return fmt.Errorf("pending review detected for %s#%d. Submit the review or re-run with --auto-submit-pending, or use the GraphQL review thread mutation.", fullName, opts.Pull)
+				return fmt.Errorf("pending review detected for %s/%s#%d. Submit the review or re-run with --auto-submit-pending, or use the GraphQL review thread mutation.", owner, name, opts.Pull)
 			}
 
 			reviewer, loginErr := service.CurrentLogin(ctx)
 			if loginErr != nil {
-				return formatReplyError(loginErr, fullName, "failed to resolve authenticated user")
+				return formatReplyError(loginErr, "failed to resolve authenticated user")
 			}
 
 			submitted, submitErr := service.SubmitPendingReviews(ctx, owner, name, opts.Pull, reviewer, autoSubmitSummary)
 			if submitErr != nil {
-				return formatReplyError(submitErr, fullName, "failed to submit pending review")
+				return formatReplyError(submitErr, "failed to submit pending review")
 			}
 			if submitted == 0 {
 				return fmt.Errorf("no pending reviews owned by %s found on pull request #%d", reviewer, opts.Pull)
@@ -110,10 +137,10 @@ func runReplyComment(ctx context.Context, opts *ReplyCommentOptions) error {
 
 			reply, err = service.ReplyToComment(ctx, owner, name, opts.Pull, opts.CommentID, opts.Body)
 			if err != nil {
-				return formatReplyError(err, fullName, "failed to post reply after submitting pending review")
+				return formatReplyError(err, "failed to post reply after submitting pending review")
 			}
 		} else {
-			return formatReplyError(err, fullName, "failed to post reply")
+			return formatReplyError(err, "failed to post reply")
 		}
 	}
 
@@ -126,22 +153,7 @@ func runReplyComment(ctx context.Context, opts *ReplyCommentOptions) error {
 	return nil
 }
 
-func (o *ReplyCommentOptions) resolveRepo() (ghrepo.Interface, error) {
-	if o.repo != nil {
-		return o.repo, nil
-	}
-	if o.BaseRepo == nil {
-		return nil, errors.New("repository resolver is not configured")
-	}
-	repo, err := o.BaseRepo()
-	if err != nil {
-		return nil, err
-	}
-	o.repo = repo
-	return repo, nil
-}
-
-func formatReplyError(err error, fullName string, prefix string) error {
+func formatReplyError(err error, prefix string) error {
 	switch e := err.(type) {
 	case *reviewapi.PullRequestNotFoundError:
 		return fmt.Errorf("%s: %w", prefix, e)
@@ -155,9 +167,9 @@ func formatReplyError(err error, fullName string, prefix string) error {
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
 		case http.StatusForbidden:
-			return fmt.Errorf("%s: access denied for %s (%s)", prefix, fullName, httpErr.Message)
+			return fmt.Errorf("%s: access denied (%s)", prefix, httpErr.Message)
 		case http.StatusNotFound:
-			return fmt.Errorf("%s: resource not found in %s (%s)", prefix, fullName, httpErr.Message)
+			return fmt.Errorf("%s: resource not found (%s)", prefix, httpErr.Message)
 		case http.StatusUnprocessableEntity:
 			return fmt.Errorf("%s: validation failed (%s)", prefix, httpErr.Message)
 		default:

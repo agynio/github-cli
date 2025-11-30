@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/spf13/cobra"
@@ -33,15 +34,22 @@ func NewCmdReviewOpen(f *cmdutil.Factory) *cobra.Command {
 		shared: PendingReviewSharedOptions{
 			IO:         f.IOStreams,
 			HttpClient: f.HttpClient,
-			BaseRepo:   f.BaseRepo,
+			Config:     f.Config,
+			BaseRepo: func() (ghrepo.Interface, error) {
+				return f.BaseRepo()
+			},
 		},
 	}
 
 	cmd := &cobra.Command{
-		Use:   "open",
+		Use:   "open [<number> | <url> | <owner>/<repo>#<number>]",
 		Short: "Open a pending review",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := opts.shared.ValidateInputs(); err != nil {
+			if len(args) > 0 {
+				opts.shared.Selector = args[0]
+			}
+			if err := opts.shared.ResolvePullRequest(); err != nil {
 				return err
 			}
 			return runReviewOpen(cmd.Context(), opts)
@@ -55,12 +63,12 @@ func NewCmdReviewOpen(f *cmdutil.Factory) *cobra.Command {
 }
 
 func runReviewOpen(ctx context.Context, opts *reviewOpenOptions) error {
-	service, repo, err := opts.shared.BuildService()
+	service, err := opts.shared.BuildService()
 	if err != nil {
 		return err
 	}
 
-	review, err := service.OpenReview(ctx, repo.RepoOwner(), repo.RepoName(), opts.shared.Pull, opts.Commit)
+	review, err := service.OpenReview(ctx, opts.shared.Repo.RepoOwner(), opts.shared.Repo.RepoName(), opts.shared.Pull, opts.Commit)
 	if err != nil {
 		return FormatReviewRunError(err, "failed to open review")
 	}
@@ -88,16 +96,23 @@ func NewCmdReviewAdd(f *cmdutil.Factory) *cobra.Command {
 		shared: PendingReviewSharedOptions{
 			IO:         f.IOStreams,
 			HttpClient: f.HttpClient,
-			BaseRepo:   f.BaseRepo,
+			Config:     f.Config,
+			BaseRepo: func() (ghrepo.Interface, error) {
+				return f.BaseRepo()
+			},
 		},
 		Side: "RIGHT",
 	}
 
 	cmd := &cobra.Command{
-		Use:   "add",
+		Use:   "add [<number> | <url> | <owner>/<repo>#<number>]",
 		Short: "Add an inline comment thread to a pending review",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := opts.shared.ValidateInputs(); err != nil {
+			if len(args) > 0 {
+				opts.shared.Selector = args[0]
+			}
+			if err := opts.shared.ResolvePullRequest(); err != nil {
 				return err
 			}
 			if strings.TrimSpace(opts.ReviewID) == "" {
@@ -132,7 +147,7 @@ func NewCmdReviewAdd(f *cmdutil.Factory) *cobra.Command {
 }
 
 func runReviewAdd(ctx context.Context, opts *reviewAddOptions) error {
-	service, repo, err := opts.shared.BuildService()
+	service, err := opts.shared.BuildService()
 	if err != nil {
 		return err
 	}
@@ -166,7 +181,7 @@ func runReviewAdd(ctx context.Context, opts *reviewAddOptions) error {
 		Body:      opts.Body,
 	}
 
-	thread, err := service.AddReviewThread(ctx, repo.RepoOwner(), repo.RepoName(), opts.shared.Pull, input)
+	thread, err := service.AddReviewThread(ctx, opts.shared.Repo.RepoOwner(), opts.shared.Repo.RepoName(), opts.shared.Pull, input)
 	if err != nil {
 		return FormatReviewRunError(err, "failed to add review thread")
 	}
@@ -190,16 +205,23 @@ func NewCmdReviewSubmit(f *cmdutil.Factory) *cobra.Command {
 		shared: PendingReviewSharedOptions{
 			IO:         f.IOStreams,
 			HttpClient: f.HttpClient,
-			BaseRepo:   f.BaseRepo,
+			Config:     f.Config,
+			BaseRepo: func() (ghrepo.Interface, error) {
+				return f.BaseRepo()
+			},
 		},
 		Event: "COMMENT",
 	}
 
 	cmd := &cobra.Command{
-		Use:   "submit",
+		Use:   "submit [<number> | <url> | <owner>/<repo>#<number>]",
 		Short: "Submit a pending review",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := opts.shared.ValidateInputs(); err != nil {
+			if len(args) > 0 {
+				opts.shared.Selector = args[0]
+			}
+			if err := opts.shared.ResolvePullRequest(); err != nil {
 				return err
 			}
 			if strings.TrimSpace(opts.ReviewID) == "" {
@@ -221,7 +243,7 @@ func NewCmdReviewSubmit(f *cmdutil.Factory) *cobra.Command {
 }
 
 func runReviewSubmit(ctx context.Context, opts *reviewSubmitOptions) error {
-	service, repo, err := opts.shared.BuildService()
+	service, err := opts.shared.BuildService()
 	if err != nil {
 		return err
 	}
@@ -231,7 +253,7 @@ func runReviewSubmit(ctx context.Context, opts *reviewSubmitOptions) error {
 		return cmdutil.FlagErrorf("%s", err)
 	}
 
-	review, err := service.SubmitReview(ctx, repo.RepoOwner(), repo.RepoName(), opts.shared.Pull, opts.ReviewID, event, opts.Body)
+	review, err := service.SubmitReview(ctx, opts.shared.Repo.RepoOwner(), opts.shared.Repo.RepoName(), opts.shared.Pull, opts.ReviewID, event, opts.Body)
 	if err != nil {
 		return FormatReviewRunError(err, "failed to submit review")
 	}

@@ -9,8 +9,10 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
+	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/spf13/cobra"
@@ -19,31 +21,40 @@ import (
 type SeeCommentsOptions struct {
 	IO         *iostreams.IOStreams
 	HttpClient func() (*http.Client, error)
+	Config     func() (gh.Config, error)
 	BaseRepo   func() (ghrepo.Interface, error)
 
+	Repo     ghrepo.Interface
+	Selector string
 	Pull     int
 	ReviewID int64
 	Latest   bool
 	Reviewer string
-
-	repo ghrepo.Interface
+	Hostname string
 }
 
 func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
 	opts := &SeeCommentsOptions{
 		IO:         f.IOStreams,
 		HttpClient: f.HttpClient,
-		BaseRepo:   f.BaseRepo,
+		Config:     f.Config,
+		BaseRepo: func() (ghrepo.Interface, error) {
+			return f.BaseRepo()
+		},
 	}
 
 	cmd := &cobra.Command{
-		Use:   "see-comments",
+		Use:   "see-comments [<number> | <url> | <owner>/<repo>#<number>]",
 		Short: "List review comments for a pull request review",
 		Long: heredoc.Doc(`
-			Fetch inline review comments for a pull request review by identifier or by resolving
-			the latest submitted review from a reviewer.
-		`),
+            Fetch inline review comments for a pull request review by identifier or by resolving
+            the latest submitted review from a reviewer.
+        `),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				opts.Selector = args[0]
+			}
 			if opts.ReviewID == 0 && !opts.Latest {
 				return cmdutil.FlagErrorf("must specify --review-id or --latest")
 			}
@@ -52,9 +63,6 @@ func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
 			}
 			if opts.Reviewer != "" && !opts.Latest {
 				return cmdutil.FlagErrorf("--reviewer is only valid with --latest")
-			}
-			if opts.Pull <= 0 {
-				return cmdutil.FlagErrorf("invalid value for --pr: %d", opts.Pull)
 			}
 
 			return runSeeComments(cmd.Context(), opts)
@@ -65,16 +73,30 @@ func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
 	cmd.Flags().Int64Var(&opts.ReviewID, "review-id", 0, "Pull request review identifier")
 	cmd.Flags().BoolVar(&opts.Latest, "latest", false, "Resolve the latest submitted review")
 	cmd.Flags().StringVar(&opts.Reviewer, "reviewer", "", "Reviewer login when using --latest")
-
-	_ = cmd.MarkFlagRequired("pr")
+	cmd.Flags().StringVar(&opts.Hostname, "hostname", "", "GitHub hostname (default to authenticated host)")
 
 	return cmd
 }
 
 func runSeeComments(ctx context.Context, opts *SeeCommentsOptions) error {
-	repo, err := opts.resolveRepo()
+	repo, number, err := shared.ResolvePullRequest(opts.BaseRepo, opts.Selector, opts.Pull)
 	if err != nil {
 		return err
+	}
+	opts.Repo = repo
+	opts.Pull = number
+
+	cfg, err := opts.Config()
+	if err != nil {
+		return err
+	}
+
+	host := repo.RepoHost()
+	if host == "" {
+		host, _ = cfg.Authentication().DefaultHost()
+	}
+	if opts.Hostname != "" {
+		host = opts.Hostname
 	}
 
 	httpClient, err := opts.HttpClient()
@@ -82,10 +104,7 @@ func runSeeComments(ctx context.Context, opts *SeeCommentsOptions) error {
 		return err
 	}
 
-	service := reviewapi.NewService(httpClient, repo.RepoHost())
-	owner := repo.RepoOwner()
-	name := repo.RepoName()
-	fullName := ghrepo.FullName(repo)
+	service := reviewapi.NewService(httpClient, host)
 
 	reviewID := opts.ReviewID
 	if opts.Latest {
@@ -93,19 +112,19 @@ func runSeeComments(ctx context.Context, opts *SeeCommentsOptions) error {
 		if reviewer == "" {
 			reviewer, err = service.CurrentLogin(ctx)
 			if err != nil {
-				return formatAPIError(err, fullName, "failed to resolve authenticated user")
+				return formatAPIError(err, "failed to resolve authenticated user")
 			}
 		}
 
-		reviewID, err = service.LatestReviewID(ctx, owner, name, opts.Pull, reviewer)
+		reviewID, err = service.LatestReviewID(ctx, repo.RepoOwner(), repo.RepoName(), opts.Pull, reviewer)
 		if err != nil {
-			return formatAPIError(err, fullName, "failed to locate latest review")
+			return formatAPIError(err, "failed to locate latest review")
 		}
 	}
 
-	comments, err := service.ReviewComments(ctx, owner, name, opts.Pull, reviewID)
+	comments, err := service.ReviewComments(ctx, repo.RepoOwner(), repo.RepoName(), opts.Pull, reviewID)
 	if err != nil {
-		return formatAPIError(err, fullName, "failed to fetch review comments")
+		return formatAPIError(err, "failed to fetch review comments")
 	}
 
 	encoder := json.NewEncoder(opts.IO.Out)
@@ -117,22 +136,7 @@ func runSeeComments(ctx context.Context, opts *SeeCommentsOptions) error {
 	return nil
 }
 
-func (o *SeeCommentsOptions) resolveRepo() (ghrepo.Interface, error) {
-	if o.repo != nil {
-		return o.repo, nil
-	}
-	if o.BaseRepo == nil {
-		return nil, errors.New("repository resolver is not configured")
-	}
-	repo, err := o.BaseRepo()
-	if err != nil {
-		return nil, err
-	}
-	o.repo = repo
-	return repo, nil
-}
-
-func formatAPIError(err error, fullName string, prefix string) error {
+func formatAPIError(err error, prefix string) error {
 	switch e := err.(type) {
 	case *reviewapi.PullRequestNotFoundError:
 		return fmt.Errorf("%s: %w", prefix, e)
@@ -146,9 +150,9 @@ func formatAPIError(err error, fullName string, prefix string) error {
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
 		case http.StatusForbidden:
-			return fmt.Errorf("%s: access denied for %s (%s)", prefix, fullName, httpErr.Message)
+			return fmt.Errorf("%s: access denied (%s)", prefix, httpErr.Message)
 		case http.StatusNotFound:
-			return fmt.Errorf("%s: resource not found in %s (%s)", prefix, fullName, httpErr.Message)
+			return fmt.Errorf("%s: resource not found (%s)", prefix, httpErr.Message)
 		case http.StatusUnprocessableEntity:
 			return fmt.Errorf("%s: validation failed (%s)", prefix, httpErr.Message)
 		default:
