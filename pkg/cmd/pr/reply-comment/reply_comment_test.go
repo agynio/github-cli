@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -112,13 +114,14 @@ func TestReplyComment_AutoSubmitPending(t *testing.T) {
 		httpmock.JSONResponse(reply),
 	)
 
-	repo, err := ghrepo.FromFullName("ORG/REPO")
-	require.NoError(t, err)
+	repo, repoErr := ghrepo.FromFullName("ORG/REPO")
+	require.NoError(t, repoErr)
+	shared.StubFinderForRunCommandStyleTests(t, "123", &api.PullRequest{Number: 123}, repo)
 	f, stdout, stderr := newTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReplyComment(f)
 	cmd.SetArgs([]string{"123", "--comment-id", "456", "--body", "Thanks!", "--auto-submit-pending"})
 
-	_, err = cmd.ExecuteC()
+	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
 	assert.Equal(t, "", stderr.String())
 	assert.JSONEq(t, `{"id":333,"in_reply_to_id":456,"body":"Thanks!","user":{"login":"octocat"},"created_at":"2024-05-06T07:08:09Z"}`, stdout.String())
@@ -140,6 +143,10 @@ func TestReplyComment_RepoOverrideWithoutGit(t *testing.T) {
 		httpmock.WithHost(httpmock.REST("POST", "repos/octo/demo/pulls/10/comments/50/replies"), "api.github.com"),
 		httpmock.JSONResponse(map[string]interface{}{"id": 99}),
 	)
+
+	overrideRepo, overrideErr := ghrepo.FromFullName("octo/demo")
+	require.NoError(t, overrideErr)
+	shared.StubFinderForRunCommandStyleTests(t, "10", &api.PullRequest{Number: 10}, overrideRepo)
 
 	noRepoErr := errors.New("no repository")
 	f, stdout, stderr := newTestFactory(t, reg, nil, noRepoErr)
@@ -166,6 +173,9 @@ func TestReplyComment_FullReferenceWithoutGit(t *testing.T) {
 		httpmock.JSONResponse(map[string]interface{}{"id": 101}),
 	)
 
+	repo := ghrepo.NewWithHost("octo", "demo", "github.com")
+	shared.StubFinderForRunCommandStyleTests(t, "octo/demo#10", &api.PullRequest{Number: 10}, repo)
+
 	noRepoErr := errors.New("no repository")
 	f, stdout, stderr := newTestFactory(t, reg, nil, noRepoErr)
 
@@ -179,4 +189,31 @@ func TestReplyComment_FullReferenceWithoutGit(t *testing.T) {
 	var payload map[string]interface{}
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &payload))
 	assert.Equal(t, float64(101), payload["id"])
+}
+
+func TestReplyComment_URLSelector(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.REST("POST", "repos/octo/demo/pulls/10/comments/50/replies"), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{"id": 202}),
+	)
+
+	selector := "https://github.com/octo/demo/pull/10"
+	repo := ghrepo.NewWithHost("octo", "demo", "github.com")
+	shared.StubFinderForRunCommandStyleTests(t, selector, &api.PullRequest{Number: 10}, repo)
+
+	f, stdout, stderr := newTestFactory(t, reg, nil, nil)
+
+	cmd := NewCmdReplyComment(f)
+	cmd.SetArgs([]string{selector, "--comment-id", "50", "--body", "ack"})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &payload))
+	assert.Equal(t, float64(202), payload["id"])
 }

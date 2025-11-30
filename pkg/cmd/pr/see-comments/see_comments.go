@@ -10,7 +10,6 @@ import (
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/gh"
-	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
 	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
@@ -22,15 +21,14 @@ type SeeCommentsOptions struct {
 	IO         *iostreams.IOStreams
 	HttpClient func() (*http.Client, error)
 	Config     func() (gh.Config, error)
-	BaseRepo   func() (ghrepo.Interface, error)
+	Finder     shared.PRFinder
 
-	Repo     ghrepo.Interface
-	Selector string
-	Pull     int
-	ReviewID int64
-	Latest   bool
-	Reviewer string
-	Hostname string
+	SelectorArg string
+	PullFlag    int
+	ReviewID    int64
+	Latest      bool
+	Reviewer    string
+	Hostname    string
 }
 
 func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
@@ -38,9 +36,6 @@ func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
 		IO:         f.IOStreams,
 		HttpClient: f.HttpClient,
 		Config:     f.Config,
-		BaseRepo: func() (ghrepo.Interface, error) {
-			return f.BaseRepo()
-		},
 	}
 
 	cmd := &cobra.Command{
@@ -52,8 +47,9 @@ func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
         `),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.Finder = shared.NewFinder(f)
 			if len(args) > 0 {
-				opts.Selector = args[0]
+				opts.SelectorArg = args[0]
 			}
 			if opts.ReviewID == 0 && !opts.Latest {
 				return cmdutil.FlagErrorf("must specify --review-id or --latest")
@@ -65,11 +61,17 @@ func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
 				return cmdutil.FlagErrorf("--reviewer is only valid with --latest")
 			}
 
+			selector, err := shared.NormalizePullRequestSelector(opts.SelectorArg, opts.PullFlag)
+			if err != nil {
+				return err
+			}
+			opts.SelectorArg = selector
+
 			return runSeeComments(cmd.Context(), opts)
 		},
 	}
 
-	cmd.Flags().IntVar(&opts.Pull, "pr", 0, "Pull request number")
+	cmd.Flags().IntVar(&opts.PullFlag, "pr", 0, "Pull request number")
 	cmd.Flags().Int64Var(&opts.ReviewID, "review-id", 0, "Pull request review identifier")
 	cmd.Flags().BoolVar(&opts.Latest, "latest", false, "Resolve the latest submitted review")
 	cmd.Flags().StringVar(&opts.Reviewer, "reviewer", "", "Reviewer login when using --latest")
@@ -79,19 +81,30 @@ func NewCmdSeeComments(f *cmdutil.Factory) *cobra.Command {
 }
 
 func runSeeComments(ctx context.Context, opts *SeeCommentsOptions) error {
-	repo, number, err := shared.ResolvePullRequest(opts.BaseRepo, opts.Selector, opts.Pull)
+	if opts.Finder == nil {
+		return errors.New("pull request finder is not configured")
+	}
+
+	findOptions := shared.FindOptions{
+		Selector:        opts.SelectorArg,
+		Fields:          []string{"number"},
+		DisableProgress: true,
+	}
+	pr, repo, err := opts.Finder.Find(findOptions)
 	if err != nil {
 		return err
 	}
-	opts.Repo = repo
-	opts.Pull = number
+	pullNumber := pr.Number
 
 	cfg, err := opts.Config()
 	if err != nil {
 		return err
 	}
 
-	host := repo.RepoHost()
+	host := ""
+	if repo != nil {
+		host = repo.RepoHost()
+	}
 	if host == "" {
 		host, _ = cfg.Authentication().DefaultHost()
 	}
@@ -105,7 +118,6 @@ func runSeeComments(ctx context.Context, opts *SeeCommentsOptions) error {
 	}
 
 	service := reviewapi.NewService(httpClient, host)
-
 	reviewID := opts.ReviewID
 	if opts.Latest {
 		reviewer := opts.Reviewer
@@ -116,13 +128,13 @@ func runSeeComments(ctx context.Context, opts *SeeCommentsOptions) error {
 			}
 		}
 
-		reviewID, err = service.LatestReviewID(ctx, repo.RepoOwner(), repo.RepoName(), opts.Pull, reviewer)
+		reviewID, err = service.LatestReviewID(ctx, repo.RepoOwner(), repo.RepoName(), pullNumber, reviewer)
 		if err != nil {
 			return formatAPIError(err, "failed to locate latest review")
 		}
 	}
 
-	comments, err := service.ReviewComments(ctx, repo.RepoOwner(), repo.RepoName(), opts.Pull, reviewID)
+	comments, err := service.ReviewComments(ctx, repo.RepoOwner(), repo.RepoName(), pullNumber, reviewID)
 	if err != nil {
 		return formatAPIError(err, "failed to fetch review comments")
 	}

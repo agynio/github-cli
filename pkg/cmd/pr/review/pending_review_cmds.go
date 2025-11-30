@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
+	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -35,9 +35,6 @@ func NewCmdReviewOpen(f *cmdutil.Factory) *cobra.Command {
 			IO:         f.IOStreams,
 			HttpClient: f.HttpClient,
 			Config:     f.Config,
-			BaseRepo: func() (ghrepo.Interface, error) {
-				return f.BaseRepo()
-			},
 		},
 	}
 
@@ -46,8 +43,9 @@ func NewCmdReviewOpen(f *cmdutil.Factory) *cobra.Command {
 		Short: "Open a pending review",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.shared.Finder = shared.NewFinder(f)
 			if len(args) > 0 {
-				opts.shared.Selector = args[0]
+				opts.shared.SelectorArg = args[0]
 			}
 			if err := opts.shared.ResolvePullRequest(); err != nil {
 				return err
@@ -97,9 +95,6 @@ func NewCmdReviewAdd(f *cmdutil.Factory) *cobra.Command {
 			IO:         f.IOStreams,
 			HttpClient: f.HttpClient,
 			Config:     f.Config,
-			BaseRepo: func() (ghrepo.Interface, error) {
-				return f.BaseRepo()
-			},
 		},
 		Side: "RIGHT",
 	}
@@ -109,8 +104,9 @@ func NewCmdReviewAdd(f *cmdutil.Factory) *cobra.Command {
 		Short: "Add an inline comment thread to a pending review",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.shared.Finder = shared.NewFinder(f)
 			if len(args) > 0 {
-				opts.shared.Selector = args[0]
+				opts.shared.SelectorArg = args[0]
 			}
 			if err := opts.shared.ResolvePullRequest(); err != nil {
 				return err
@@ -206,9 +202,6 @@ func NewCmdReviewSubmit(f *cmdutil.Factory) *cobra.Command {
 			IO:         f.IOStreams,
 			HttpClient: f.HttpClient,
 			Config:     f.Config,
-			BaseRepo: func() (ghrepo.Interface, error) {
-				return f.BaseRepo()
-			},
 		},
 		Event: "COMMENT",
 	}
@@ -218,8 +211,9 @@ func NewCmdReviewSubmit(f *cmdutil.Factory) *cobra.Command {
 		Short: "Submit a pending review",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.shared.Finder = shared.NewFinder(f)
 			if len(args) > 0 {
-				opts.shared.Selector = args[0]
+				opts.shared.SelectorArg = args[0]
 			}
 			if err := opts.shared.ResolvePullRequest(); err != nil {
 				return err

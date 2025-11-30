@@ -14,6 +14,8 @@ For [installation options see below](#installation), for usage instructions [see
 
 Use `gh pr` subcommands to script review workflows without hand-writing REST or GraphQL payloads.
 
+All helper commands accept the standard `gh pr` selectors (number, URL, or `owner/repo#number`) and honor `-R/--repo` even when run outside a git checkout.
+
 ```sh
 # list comments from the latest submitted review by the current user
 gh pr see-comments 42 --latest -R octo/demo

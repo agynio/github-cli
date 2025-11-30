@@ -13,7 +13,6 @@ import (
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
 	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
-	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/spf13/cobra"
 )
@@ -21,33 +20,47 @@ import (
 // PendingReviewSharedOptions contains flags and dependencies shared by review subcommands
 // that operate on pending reviews or REST helpers.
 type PendingReviewSharedOptions struct {
-	IO         *iostreams.IOStreams
-	HttpClient func() (*http.Client, error)
-	Config     func() (gh.Config, error)
-	BaseRepo   func() (ghrepo.Interface, error)
-	Repo       ghrepo.Interface
-	Selector   string
-	Pull       int
-	Hostname   string
+	IO          *iostreams.IOStreams
+	HttpClient  func() (*http.Client, error)
+	Config      func() (gh.Config, error)
+	Finder      shared.PRFinder
+	Repo        ghrepo.Interface
+	SelectorArg string
+	PullFlag    int
+	Pull        int
+	Hostname    string
 }
 
 // RegisterFlags adds the standard repository-related flags to the provided command.
 func (o *PendingReviewSharedOptions) RegisterFlags(cmd *cobra.Command) {
-	cmd.Flags().IntVar(&o.Pull, "pr", 0, "Pull request number")
+	cmd.Flags().IntVar(&o.PullFlag, "pr", 0, "Pull request number")
 	cmd.Flags().StringVar(&o.Hostname, "hostname", "", "GitHub hostname (default to authenticated host)")
 }
 
 // ResolvePullRequest resolves the repository and pull request number for a command invocation.
 func (o *PendingReviewSharedOptions) ResolvePullRequest() error {
-	repo, number, err := shared.ResolvePullRequest(o.BaseRepo, o.Selector, o.Pull)
+	if o.Finder == nil {
+		return errors.New("pull request finder is not configured")
+	}
+
+	selector, err := shared.NormalizePullRequestSelector(o.SelectorArg, o.PullFlag)
 	if err != nil {
 		return err
 	}
-	if number <= 0 {
-		return cmdutil.FlagErrorf("must specify a pull request via --pr or as an argument")
+	o.SelectorArg = selector
+
+	findOptions := shared.FindOptions{
+		Selector:        selector,
+		Fields:          []string{"number"},
+		DisableProgress: true,
 	}
+	pr, repo, err := o.Finder.Find(findOptions)
+	if err != nil {
+		return err
+	}
+
 	o.Repo = repo
-	o.Pull = number
+	o.Pull = pr.Number
 	return nil
 }
 

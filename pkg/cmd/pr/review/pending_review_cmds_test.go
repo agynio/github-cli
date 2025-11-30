@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -90,11 +92,114 @@ func TestReviewOpen(t *testing.T) {
 
 	repo, err := ghrepo.FromFullName("ORG/REPO")
 	require.NoError(t, err)
+	shared.StubFinderForRunCommandStyleTests(t, "42", &api.PullRequest{Number: 42}, repo)
 	f, stdout, stderr := newPendingTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReview(f, nil)
 	cmd.SetArgs([]string{"pending", "open", "42"})
 
 	_, err = cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+	assert.JSONEq(t, `{"id":"RV_review","state":"PENDING","submitted_at":null}`, stdout.String())
+}
+
+func TestReviewOpen_FullReferenceSelector(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.GraphQL(`query PullRequestID`), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"data": map[string]interface{}{
+				"repository": map[string]interface{}{
+					"pullRequest": map[string]interface{}{"id": "PRID"},
+				},
+			},
+		}),
+	)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.REST("GET", "repos/octo/demo/pulls/42"), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"head": map[string]interface{}{"sha": "abc123"},
+		}),
+	)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.GraphQL(`mutation AddPullRequestReview`), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"data": map[string]interface{}{
+				"addPullRequestReview": map[string]interface{}{
+					"pullRequestReview": map[string]interface{}{
+						"id":          "RV_review",
+						"state":       "PENDING",
+						"submittedAt": nil,
+					},
+				},
+			},
+		}),
+	)
+
+	selector := "octo/demo#42"
+	repo := ghrepo.NewWithHost("octo", "demo", "github.com")
+	shared.StubFinderForRunCommandStyleTests(t, selector, &api.PullRequest{Number: 42}, repo)
+
+	f, stdout, stderr := newPendingTestFactory(t, reg, nil, nil)
+	cmd := NewCmdReview(f, nil)
+	cmd.SetArgs([]string{"pending", "open", selector})
+
+	_, err := cmd.ExecuteC()
+	require.NoError(t, err)
+	assert.Equal(t, "", stderr.String())
+	assert.JSONEq(t, `{"id":"RV_review","state":"PENDING","submitted_at":null}`, stdout.String())
+}
+
+func TestReviewOpen_URLSelector(t *testing.T) {
+	reg := &httpmock.Registry{}
+	defer reg.Verify(t)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.GraphQL(`query PullRequestID`), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"data": map[string]interface{}{
+				"repository": map[string]interface{}{
+					"pullRequest": map[string]interface{}{"id": "PRID"},
+				},
+			},
+		}),
+	)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.REST("GET", "repos/octo/demo/pulls/42"), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"head": map[string]interface{}{"sha": "abc123"},
+		}),
+	)
+
+	reg.Register(
+		httpmock.WithHost(httpmock.GraphQL(`mutation AddPullRequestReview`), "api.github.com"),
+		httpmock.JSONResponse(map[string]interface{}{
+			"data": map[string]interface{}{
+				"addPullRequestReview": map[string]interface{}{
+					"pullRequestReview": map[string]interface{}{
+						"id":          "RV_review",
+						"state":       "PENDING",
+						"submittedAt": nil,
+					},
+				},
+			},
+		}),
+	)
+
+	selector := "https://github.com/octo/demo/pull/42"
+	repo := ghrepo.NewWithHost("octo", "demo", "github.com")
+	shared.StubFinderForRunCommandStyleTests(t, selector, &api.PullRequest{Number: 42}, repo)
+
+	f, stdout, stderr := newPendingTestFactory(t, reg, nil, nil)
+	cmd := NewCmdReview(f, nil)
+	cmd.SetArgs([]string{"pending", "open", selector})
+
+	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
 	assert.Equal(t, "", stderr.String())
 	assert.JSONEq(t, `{"id":"RV_review","state":"PENDING","submitted_at":null}`, stdout.String())
@@ -136,6 +241,7 @@ func TestReviewAdd(t *testing.T) {
 
 	repo, err := ghrepo.FromFullName("ORG/REPO")
 	require.NoError(t, err)
+	shared.StubFinderForRunCommandStyleTests(t, "9", &api.PullRequest{Number: 9}, repo)
 	f, stdout, stderr := newPendingTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReview(f, nil)
 	cmd.SetArgs([]string{"pending", "add", "9", "--review-id", "RV123", "--path", "file.go", "--line", "7", "--side", "right", "--body", "note"})
@@ -167,6 +273,7 @@ func TestReviewSubmit(t *testing.T) {
 
 	repo, err := ghrepo.FromFullName("ORG/REPO")
 	require.NoError(t, err)
+	shared.StubFinderForRunCommandStyleTests(t, "5", &api.PullRequest{Number: 5}, repo)
 	f, stdout, stderr := newPendingTestFactory(t, reg, repo, nil)
 	cmd := NewCmdReview(f, nil)
 	cmd.SetArgs([]string{"pending", "submit", "5", "--review-id", "RV123", "--event", "approve"})
@@ -213,6 +320,10 @@ func TestReviewOpen_RepoOverrideWithoutGit(t *testing.T) {
 			},
 		}),
 	)
+
+	overrideRepo, overrideErr := ghrepo.FromFullName("octo/demo")
+	require.NoError(t, overrideErr)
+	shared.StubFinderForRunCommandStyleTests(t, "42", &api.PullRequest{Number: 42}, overrideRepo)
 
 	noRepoErr := errors.New("no repository context")
 	f, stdout, stderr := newPendingTestFactory(t, reg, nil, noRepoErr)
