@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/cli/cli/v2/api"
-	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/reviewapi"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -21,53 +21,54 @@ import (
 type PendingReviewSharedOptions struct {
 	IO         *iostreams.IOStreams
 	HttpClient func() (*http.Client, error)
-	Config     func() (gh.Config, error)
-	Org        string
-	Repo       string
+	BaseRepo   func() (ghrepo.Interface, error)
 	Pull       int
-	Hostname   string
+
+	repo ghrepo.Interface
 }
 
-// RegisterFlags adds the standard repository-related flags to the provided command.
+// RegisterFlags adds the shared pull request flag to the provided command.
 func (o *PendingReviewSharedOptions) RegisterFlags(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&o.Org, "org", "", "Organization that owns the repository")
-	cmd.Flags().StringVar(&o.Repo, "repo", "", "Repository name")
 	cmd.Flags().IntVar(&o.Pull, "pr", 0, "Pull request number")
-	cmd.Flags().StringVar(&o.Hostname, "hostname", "", "GitHub hostname (default to authenticated host)")
 }
 
-// ValidateRepoArgs ensures repository flags are populated with valid values.
-func (o *PendingReviewSharedOptions) ValidateRepoArgs() error {
-	if strings.TrimSpace(o.Org) == "" {
-		return cmdutil.FlagErrorf("--org is required")
-	}
-	if strings.TrimSpace(o.Repo) == "" {
-		return cmdutil.FlagErrorf("--repo is required")
-	}
+// ValidateInputs ensures required arguments are populated with valid values.
+func (o *PendingReviewSharedOptions) ValidateInputs() error {
 	if o.Pull <= 0 {
 		return cmdutil.FlagErrorf("invalid value for --pr: %d", o.Pull)
 	}
 	return nil
 }
 
-// BuildService constructs a review service using the configured HTTP client and hostname.
-func (o *PendingReviewSharedOptions) BuildService() (*reviewapi.Service, error) {
-	cfg, err := o.Config()
+// ResolveRepo returns the repository associated with the command context.
+func (o *PendingReviewSharedOptions) ResolveRepo() (ghrepo.Interface, error) {
+	if o.repo != nil {
+		return o.repo, nil
+	}
+	if o.BaseRepo == nil {
+		return nil, errors.New("repository resolver is not configured")
+	}
+	repo, err := o.BaseRepo()
 	if err != nil {
 		return nil, err
 	}
+	o.repo = repo
+	return repo, nil
+}
 
-	host, _ := cfg.Authentication().DefaultHost()
-	if o.Hostname != "" {
-		host = o.Hostname
+// BuildService constructs a review service using the configured HTTP client and repo host.
+func (o *PendingReviewSharedOptions) BuildService() (*reviewapi.Service, ghrepo.Interface, error) {
+	repo, err := o.ResolveRepo()
+	if err != nil {
+		return nil, nil, err
 	}
 
 	httpClient, err := o.HttpClient()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return reviewapi.NewService(httpClient, host), nil
+	return reviewapi.NewService(httpClient, repo.RepoHost()), repo, nil
 }
 
 // NormalizeSide validates and normalizes a diff side identifier.

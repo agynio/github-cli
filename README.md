@@ -12,21 +12,24 @@ For [installation options see below](#installation), for usage instructions [see
 
 ### Pull request review helpers
 
-Use `gh pr` review helpers to script GraphQL pending review flows and REST comment automation without hand-writing payloads.
+Use `gh pr` review helpers to script GraphQL pending review flows and REST comment automation without hand-writing payloads. Commands honor the active repository context and accept the standard `-R|--repo` override.
 
 ```sh
 # GraphQL pending review flow (open → add inline thread → submit)
-gh pr review pending open   --org octo --repo demo --pr 42
-gh pr review pending add    --org octo --repo demo --pr 42 --review-id REVIEW_ID \
+gh pr review pending open   --pr 42
+gh pr review pending add    --pr 42 --review-id REVIEW_ID \
   --path src/main.go --line 87 --side RIGHT --body "nit: rename for clarity"
-gh pr review pending submit --org octo --repo demo --pr 42 --review-id REVIEW_ID --event COMMENT
+gh pr review pending submit --pr 42 --review-id REVIEW_ID --event COMMENT
 
 # Fetch inline comments from the latest submitted review by the current user
-gh pr see-comments --org octo --repo demo --pr 42 --latest
+gh pr see-comments --pr 42 --latest
 
 # Reply to a review comment with automatic pending review submission when needed
-gh pr reply-comment --org octo --repo demo --pr 42 --comment-id COMMENT_ID \
+gh pr reply-comment --pr 42 --comment-id COMMENT_ID \
   --body "Thanks for the catch" --auto-submit-pending
+
+# Specify another repository explicitly
+gh pr review pending open --pr 123 -R octo/demo
 ```
 
 ## Contributing

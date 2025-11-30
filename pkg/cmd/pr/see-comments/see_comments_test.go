@@ -9,6 +9,7 @@ import (
 
 	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -30,6 +31,9 @@ func newTestFactory(t *testing.T, rt http.RoundTripper) (*cmdutil.Factory, *byte
 		IOStreams: ios,
 		HttpClient: func() (*http.Client, error) {
 			return &http.Client{Transport: rt}, nil
+		},
+		BaseRepo: func() (ghrepo.Interface, error) {
+			return ghrepo.NewWithHost("ORG", "REPO", "github.com"), nil
 		},
 		Config: func() (gh.Config, error) {
 			return cfg, nil
@@ -63,7 +67,7 @@ func TestSeeComments_ByReviewID(t *testing.T) {
 
 	f, stdout, stderr := newTestFactory(t, reg)
 	cmd := NewCmdSeeComments(f)
-	cmd.SetArgs([]string{"--org", "ORG", "--repo", "REPO", "--pr", "123", "--review-id", "456"})
+	cmd.SetArgs([]string{"--pr", "123", "--review-id", "456"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)

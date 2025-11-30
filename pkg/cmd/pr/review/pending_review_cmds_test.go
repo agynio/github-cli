@@ -10,6 +10,7 @@ import (
 
 	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -31,6 +32,9 @@ func newPendingTestFactory(t *testing.T, rt http.RoundTripper) (*cmdutil.Factory
 		IOStreams: ios,
 		HttpClient: func() (*http.Client, error) {
 			return &http.Client{Transport: rt}, nil
+		},
+		BaseRepo: func() (ghrepo.Interface, error) {
+			return ghrepo.NewWithHost("ORG", "REPO", "github.com"), nil
 		},
 		Config: func() (gh.Config, error) {
 			return cfg, nil
@@ -77,7 +81,7 @@ func TestReviewOpen(t *testing.T) {
 
 	f, stdout, stderr := newPendingTestFactory(t, reg)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"pending", "open", "--org", "ORG", "--repo", "REPO", "--pr", "42"})
+	cmd.SetArgs([]string{"pending", "open", "--pr", "42"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
@@ -121,7 +125,7 @@ func TestReviewAdd(t *testing.T) {
 
 	f, stdout, stderr := newPendingTestFactory(t, reg)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"pending", "add", "--org", "ORG", "--repo", "REPO", "--pr", "9", "--review-id", "RV123", "--path", "file.go", "--line", "7", "--side", "right", "--body", "note"})
+	cmd.SetArgs([]string{"pending", "add", "--pr", "9", "--review-id", "RV123", "--path", "file.go", "--line", "7", "--side", "right", "--body", "note"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
@@ -150,7 +154,7 @@ func TestReviewSubmit(t *testing.T) {
 
 	f, stdout, stderr := newPendingTestFactory(t, reg)
 	cmd := NewCmdReview(f, nil)
-	cmd.SetArgs([]string{"pending", "submit", "--org", "ORG", "--repo", "REPO", "--pr", "5", "--review-id", "RV123", "--event", "approve"})
+	cmd.SetArgs([]string{"pending", "submit", "--pr", "5", "--review-id", "RV123", "--event", "approve"})
 
 	_, err := cmd.ExecuteC()
 	require.NoError(t, err)
