@@ -30,6 +30,23 @@ gh pr review pending submit 42 --review-id REVIEW_ID --event COMMENT -R octo/dem
 
 ```
 
+### Nix support
+
+This fork ships a Nix flake for reproducible builds and development.
+
+```sh
+# Build the gh binary for your host
+nix build .#gh
+
+# Run gh directly without installing
+nix run .#gh -- pr status
+
+# Enter a dev shell with Go, golangci-lint, git, and other common tools
+nix develop
+```
+
+You can also install the packaged CLI via the overlay: `nix profile install .#gh`.
+
 ## Contributing
 
 If anything feels off or if you feel that some functionality is missing, please check out the [contributing page](.github/CONTRIBUTING.md). There you will find instructions for sharing your feedback, building the tool locally, and submitting pull requests to the project.
